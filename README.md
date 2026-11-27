@@ -18,7 +18,12 @@
 1. سوّي مستودع جديد (Repository)، مثلاً `dukkan`.
 2. ارفع هذا المجلد كله عليه.
 
-### 2) Cloudflare Pages
+### 2) Cloudflare (Workers — الطريقة الجديدة)
+1. **Workers & Pages → Create → Import a repository**، واختار `dukkan`.
+2. Project name: `dukkan` · Build command: **فارغ** · Deploy command: `npx wrangler deploy` (الافتراضي).
+3. **Deploy**. الرابط يطلع مثل `https://dukkan.<اسمك>.workers.dev`. ملف `wrangler.jsonc` يگول لـ Cloudflare يرفع مجلد `public`.
+
+### 2-ب) أو Cloudflare Pages (الطريقة القديمة)
 1. من Cloudflare: **Workers & Pages → Create → Pages → Connect to Git**، واختار المستودع.
 2. الإعدادات:
    - Framework preset: **None**
