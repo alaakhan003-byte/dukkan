@@ -1,0 +1,27 @@
+{
+  "name": "dukkan-desktop",
+  "productName": "Dukkan",
+  "version": "1.0.0",
+  "description": "دكّان — نظام المحل (نسخة الحاسبة)",
+  "main": "main.js",
+  "author": "Dukkan",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "44.11.2",
+    "electron-builder": "26.18.1"
+  },
+  "build": {
+    "appId": "app.dukkan.desktop",
+    "productName": "Dukkan",
+    "artifactName": "Dukkan-Setup.${ext}",
+    "directories": {"output": "dist"},
+    "files": ["main.js", "config.json", "offline.html", "icon.png"],
+    "win": {"target": [{"target": "nsis", "arch": ["x64"]}], "icon": "icon.ico"},
+    "nsis": {"oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "Dukkan", "runAfterFinish": true}
+  }
+}

@@ -1,0 +1,55 @@
+name: نسخة الحاسبة (Windows EXE)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Site address (from the repo variable SITE_URL, if set)
+        shell: pwsh
+        env:
+          SITE_URL: ${{ vars.SITE_URL }}
+        run: |
+          if ($env:SITE_URL) {
+            $u = $env:SITE_URL.TrimEnd('/') + '/app/'
+            @{ url = $u } | ConvertTo-Json | Set-Content -Path desktop/config.json -Encoding utf8NoBOM
+          }
+          Get-Content desktop/config.json
+
+      - name: Install
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Build EXE
+        working-directory: desktop
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: Version
+        id: v
+        shell: pwsh
+        run: |
+          $v = (Get-Content desktop/package.json | ConvertFrom-Json).version
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: desktop-v${{ steps.v.outputs.version }}-${{ github.run_number }}
+          name: دكّان للحاسبة ${{ steps.v.outputs.version }}
+          body: نسخة ويندوز من دكّان. تفتح الموقع بنافذة خاصة، وكل تحديث بالموقع يوصلها لحاله.
+          files: desktop/dist/Dukkan-Setup.exe
+          make_latest: true
