@@ -1404,6 +1404,33 @@ input.has-dmy::-webkit-datetime-edit{color:transparent}
 @media(prefers-reduced-motion:reduce){.cam-frame i,.cam-ph.busy svg{animation:none}}
 /* v25 */
 .pk-more{text-align:center;color:var(--muted);font-size:13px;padding:14px 8px 18px}
+/* v27: the worker's version */
+.wk-home{max-width:1120px;margin:-30px auto 0;padding:0 16px;position:relative;z-index:6}
+.wh-in{background:var(--card);border-radius:22px;padding:16px;box-shadow:0 18px 40px -22px rgba(15,23,42,.35)}
+.wh-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:12px}.wh-h b{font-size:18px}.wh-h span{color:var(--muted);font-size:13px}
+.wh-k{display:grid;grid-template-columns:repeat(auto-fit,minmax(0,1fr));gap:8px}
+.wh-k button{border:0;border-radius:15px;background:#F6F7FB;padding:12px 8px;text-align:center;font:inherit;cursor:pointer;display:grid;gap:2px}
+.wh-k small{color:var(--muted);font-size:12.5px}.wh-k b{font-size:22px}
+body.dk-worker .wk-home + .summary{display:none}
+.follow{display:flex;gap:8px;margin:0 0 10px}.follow .btn{flex:1;display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;text-decoration:none}
+.follow .btn svg{width:18px;height:18px}.follow .btn.wa{background:#DCFCE7;color:#15803D;border:0}
+.fl-b{display:flex;gap:6px;align-items:center;flex:none;margin-inline-start:6px}
+.fl-b a,.fl-b button{width:40px;height:40px;border-radius:12px;border:0;background:#F1F5F9;display:grid;place-items:center;font-size:18px;text-decoration:none;cursor:pointer}
+/* no "money": the shop's totals, cash, profits and buying prices are not shown */
+body.dk-nomoney .summary,body.dk-nomoney #wk,body.dk-nomoney #tkIn,body.dk-nomoney .ivwrap,body.dk-nomoney #invVal,
+body.dk-nomoney .chip.buy,body.dk-nomoney #totals .r.g,body.dk-nomoney #pRep,body.dk-nomoney .pst,body.dk-nomoney .qs,
+body.dk-nomoney #v-installments #dk,body.dk-nomoney #dk.kpi,body.dk-nomoney #puHero,body.dk-nomoney .ptable td.g,body.dk-nomoney .ptable th:last-child,
+body.dk-nomoney .sh-body .p,body.dk-nomoney #hints,body.dk-nomoney .fld:has(#fBuy),
+body.dk-nomoney .tile[data-id="cashbox"],body.dk-nomoney .tile[data-id="expenses"],body.dk-nomoney .tile[data-id="reports"],body.dk-nomoney .tile[data-id="logs"],
+body.dk-nomoney [data-qa="exp"],body.dk-nomoney [data-qa="dep"],body.dk-nomoney [data-qa="wd"],body.dk-nomoney [data-qa="close"],body.dk-nomoney [data-qa="end"],
+body.dk-nopur .tile[data-id="suppliers"],body.dk-nopur [data-qa="pur"],
+body.dk-nosell .tile[data-id="sales"],body.dk-nosell [data-qa="cash"],body.dk-nosell #cdSale,
+body.dk-nopay [data-qa="pay"],body.dk-nopay #dPay,body.dk-nopay #dlist .pay,
+body.dk-noprod [data-qa="prod"],body.dk-noprod #v-products #fab,body.dk-noprod #shEdit,body.dk-noprod #shCopy,body.dk-noprod #shDel,body.dk-noprod #shCount,body.dk-noprod #shStock,body.dk-noprod #parch,
+body.dk-noret [data-retgo],body.dk-noret #dDel,body.dk-noret #dEdit,
+body.dk-nocust #cdEdit,body.dk-nocust #cdDel,
+body.dk-nomoney #bnav [data-bn="cashbox"],body.dk-nosell #bnav [data-bn="sales"],body.dk-worker #cdDel,
+body.dk-worker #smEnd,body.dk-worker #smDl,body.dk-worker #smRs,body.dk-worker #smLog{display:none!important}
 </style>
 </head>
 <body>
@@ -9051,6 +9078,139 @@ const PRICE_MAX = 1e9;   // a billion dinars: nothing in the shop costs more
     };
     more();
   })(renderPickList);
+}
+
+/* ================= v27: the worker's version — sees and does only what the owner allows ================= */
+// window.__dkRole comes from the shop account (website / phone / Windows). Inside Claude there is none: everything stays as it was.
+const dkRole = () => window.__dkRole || null;
+const isWorker = () => { const r = dkRole(); return !!r && r.role !== 'owner'; };
+const canDo = k => { const r = dkRole(); return !r || r.role === 'owner' || !!(r.perms || {})[k]; };
+const ROLE_BLOCK = () => {
+  const L = [];
+  if (!canDo('money')) L.push('cashbox', 'expenses', 'reports', 'logs');
+  if (!canDo('purchases')) L.push('suppliers', 'supplier');
+  if (!canDo('sell')) L.push('sales');
+  return L;
+};
+function applyRole() {
+  const b = document.body.classList;
+  b.toggle('dk-worker', isWorker());
+  [['money', 'dk-nomoney'], ['purchases', 'dk-nopur'], ['products', 'dk-noprod'], ['returns', 'dk-noret'], ['sell', 'dk-nosell'], ['pay', 'dk-nopay'], ['customers', 'dk-nocust']]
+    .forEach(([k, c]) => b.toggle(c, !canDo(k)));
+}
+applyRole();
+document.addEventListener('DOMContentLoaded', applyRole);
+
+// a closed section can't be opened by its address either
+{
+  const r0 = route;
+  route = function () {
+    applyRole();
+    const h = location.hash.slice(1);
+    if (isWorker() && ROLE_BLOCK().includes(h)) { toast('هذا القسم لصاحب المحل', false); replaceHash(''); return; }
+    if (isWorker() && h === 'product-form' && !canDo('products') && !formState?.editing) { replaceHash('products'); return; }
+    return r0.apply(this, arguments);
+  };
+}
+
+/* --- the worker's home: his own day, without the shop's money --- */
+function renderWorkerHome() {
+  const box = $('#wkHome'); if (!isWorker()) { box?.remove(); return; }
+  const r = dkRole(), T = todayISO();
+  const mine = invoices.filter(x => x.date === T && (x.by === r.phone || x.createdBy === r.phone || x.uid === r.phone));
+  const lateC = new Set(); invoices.filter(x => x.type !== 'cash').forEach(x => { if (alloc(x).rows.some(rw => rw.status === 'late')) lateC.add(x.customerId || x.customerName); });
+  const html = `<div class="wh-in"><div class="wh-h"><b>أهلاً ${esc(r.name || '')} 👋</b><span>${esc(cfg().shopName || '')}</span></div>
+    <div class="wh-k">
+      ${canDo('sell') ? `<button data-go="sales"><small>فواتيرك اليوم</small><b class="num">${mine.length}</b></button>` : ''}
+      <button data-go="installments"><small>زبائن متأخرين</small><b class="num ${lateC.size ? 'amt-out' : ''}">${lateC.size}</b></button>
+      <button data-go="customers"><small>العملاء</small><b class="num">${customers.length}</b></button>
+    </div></div>`;
+  if (!box) { $('#v-home .summary')?.insertAdjacentHTML('beforebegin', `<section class="wk-home" id="wkHome">${html}</section>`); $('#wkHome')?.addEventListener('click', e => { const b = e.target.closest('[data-go]'); if (b) nav(b.dataset.go); }); }
+  else box.innerHTML = html;
+}
+{
+  const ra = renderAll;
+  renderAll = function () { const out = ra.apply(this, arguments); try { applyRole(); renderWorkerHome(); } catch (e) {} return out; };
+}
+// the worker's sales carry his phone, so "your invoices today" and the owner's records know who sold
+{
+  const bp = put;
+  put = async function (n, data, id) {
+    if (n === 'invoices' && dkRole() && data && !data.by) {
+      const old = id ? allInvoices.find(x => x.id === id) : null;
+      if (old && old.by) data = {...data, by: old.by, byName: old.byName || ''};
+      else if (!old) data = {...data, by: dkRole().phone, byName: dkRole().name || ''};
+    }
+    return bp.call(this, n, data, id);
+  };
+}
+
+/* --- following up a debt: call, or a ready WhatsApp reminder --- */
+function debtReminder(c) {
+  const s = custStats(c), d = custDue(c), shop = cfg().shopName;
+  const L = [`السلام عليكم ${c.name} 🌷`, '', `نود تذكيرك بأن عليك مبلغ ${money(s.rem)} دينار${shop ? ' لدى ' + shop : ''}.`];
+  if (s.lateAmt) L.push(`⚠ منه مبلغ متأخر: ${money(s.lateAmt)} دينار.`);
+  if (d && d.r && d.r.due >= todayISO()) L.push(`📅 الدفعة الجاية: ${fmtD(d.r.due)} — ${money(d.left)} دينار.`);
+  L.push('', 'نتمنى منك تسديد المبلغ بأقرب وقت ممكن، وشكراً لتعاونك.');
+  return L.join('\n') + shopSign();
+}
+const telOf = p => { const d = toEn(p || '').replace(/\D/g, ''); return d.length >= 7 ? d : ''; };
+function followHTML(c) {
+  if (!c) return '';
+  const s = custStats(c); if (!(s.rem > 0)) return '';
+  const tel = telOf(c.phone);
+  return `<div class="follow">${tel ? `<a class="btn ghost" href="tel:${tel}">${I('<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>')}اتصال</a>` : ''}
+    <button type="button" class="btn wa" data-remind="${esc(c.id)}">${I('<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.8-.9L3 20l1.1-5A8.4 8.4 0 0 1 12 3a8.5 8.5 0 0 1 9 8.5z"/>')}تذكير بالدين</button></div>`;
+}
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-remind]'); if (!b) return;
+  e.preventDefault(); e.stopPropagation();
+  const c = customers.find(x => x.id === b.dataset.remind); if (!c) return;
+  openWaSheet({title: 'تذكير بالدين', name: c.name, phone: c.phone, text: debtReminder(c)});
+}, true);
+// on the customer's page
+{
+  const cu = SEC.customer.update;
+  SEC.customer.update = function () {
+    const out = cu.apply(this, arguments);
+    try { const c = customers.find(x => x.id === curCust); const dact = $('#gBody .dact'); if (c && dact && !$('#gBody .follow')) dact.insertAdjacentHTML('beforebegin', followHTML(c)); } catch (e) {}
+    return out;
+  };
+}
+// on every line of "الأقساط والديون": a call and a reminder button
+{
+  const iu = SEC.installments.update;
+  SEC.installments.update = function () {
+    const out = iu.apply(this, arguments);
+    try {
+      document.querySelectorAll('#dlist .rc').forEach(rc => {
+        if (rc.querySelector('.fl-b')) return;
+        const x = invoices.find(y => y.id === rc.querySelector('[data-iid]')?.dataset.iid); if (!x) return;
+        const c = customers.find(y => y.id === x.customerId); if (!c) return;
+        const tel = telOf(c.phone);
+        rc.insertAdjacentHTML('beforeend', `<span class="fl-b">${tel ? `<a href="tel:${tel}" aria-label="اتصال" title="اتصال">📞</a>` : ''}<button type="button" data-remind="${esc(c.id)}" aria-label="تذكير بالواتساب" title="تذكير بالواتساب">💬</button></span>`);
+      });
+    } catch (e) {}
+    return out;
+  };
+}
+// with a shop account the data is already safe in the cloud: no forced "save a backup first" screen, no Gmail/Drive nagging
+{
+  const cl = checkLock;
+  checkLock = function () { if (dkRole() || window.APP_SITE) { lockChecked = true; return; } return cl.apply(this, arguments); };
+  const hw = homeWarnings;
+  homeWarnings = function () {
+    let W = hw.apply(this, arguments);
+    if (!window.APP_SITE) return W;
+    W = W.filter(w => !/الجيميل|الدرايف/.test(w.t || ''));
+    if (!dkRole() && pendingLogs().length && !W.some(w => w.go === '__backup')) W.unshift({ic: IC.save, t: 'نزّل نسخة احتياطية', s: 'بياناتك على هذا الجهاز بس — سجّل دخول بحساب محلك حتى تنحفظ بالسحابة', go: '__backup'});
+    return W;
+  };
+}
+// the instalment reminder ends with the same kind words
+{
+  const wm = waMessage;
+  waMessage = function (d) { return wm.apply(this, arguments).replace('نرجو التسديد بأقرب وقت، وشكراً لتعاونكم.', 'نتمنى منكم تسديد المبلغ بأقرب وقت ممكن، وشكراً لتعاونكم 🌷'); };
 }
 
 /* ---------- start ---------- */

@@ -115,7 +115,8 @@
           if (d == null) tx.objectStore('docs').delete(KEY(op.c, op.i)); else tx.objectStore('docs').put({c: op.c, i: op.i, d: d}, KEY(op.c, op.i));
           changed[op.c] = 1;
         }
-        if (w) { if (x.ok) w.ok(); else { var e = new Error(x.err === 'owner' ? 'هذا الشي لصاحب المحل بس' : 'ما انحفظ'); e.code = x.err === 'owner' ? 'permission_denied' : 'failed'; w.bad(e); } }
+        if (!x.ok && x.msg) say(x.msg, false);
+        if (w) { if (x.ok) w.ok(); else { var e = new Error(x.msg || (x.err === 'owner' ? 'هذا الشي لصاحب المحل بس' : 'ما انحفظ')); e.code = x.err === 'owner' || x.err === 'perm' ? 'permission_denied' : 'failed'; w.bad(e); } }
       });
       self.hold(function () { Object.keys(changed).forEach(function (c) { self.notify(c); }); });
       self.online(true);
@@ -188,6 +189,7 @@
       else if (m.t === 'c') { if (m.seq > self.cursor) self.pull(); }
       else if (m.t === 'ev') { if (m.by !== self.s.user.phone) sideNote(m.title, m.body); }
       else if (m.t === 'bye') { self.wsDead = true; self.pull(); }
+      else if (m.t === 'perm' && m.phone === self.s.user.phone) refreshMe(true);
     };
     ws.onclose = function () {
       self.liveOk = false; self.ws = null; clearInterval(self.pingT);
@@ -321,12 +323,29 @@
     return baseUse ? baseUse(name) : Promise.resolve(null);
   }};
   function startCloud() {
+    setRole();
     cloud = new Cloud(sess);
     window.__dkCloud = cloud;
-    cloud.ready.then(function () { resolveDb(cloud); resolveUser(userApi()); cloud.start(); loadPeople().catch(function () {}); offerUpload(); pushInvite(); desktopSession(); })
+    cloud.ready.then(function () { resolveDb(cloud); resolveUser(userApi()); cloud.start(); loadPeople().catch(function () {}); offerUpload(); pushInvite(); desktopSession(); setTimeout(function () { refreshMe(false); }, 1500); })
       .catch(function () { resolveDb(null); resolveUser(null); say('ما گدرت أفتح التخزين على هذا الجهاز', false); });
   }
   function startLocal() { resolveDb(null); resolveUser(null); }
+  // what this person may see and do (the owner changes it from "العمال"); the app reads window.__dkRole
+  function setRole() { window.__dkRole = sess && sess.user ? {role: sess.user.role, perms: sess.user.perms || {}, name: sess.user.name, phone: sess.user.phone} : null; }
+  var HIDE = function (P) { return (P.money ? [] : ['cash', 'expenses', 'closings', 'recurring', 'logs']).concat(P.purchases ? [] : ['supplierTx', 'suppliers']); };
+  function refreshMe(fromServer) {
+    return call('/me').then(function (r) {
+      var before = JSON.stringify((sess.user && sess.user.perms) || {}), now = JSON.stringify(r.user.perms || {});
+      sess.user = r.user; sess.shop = r.shop; LS.set('dk:session', JSON.stringify(sess)); setRole();
+      if (before === now || !cloud) return;
+      // permissions changed: drop what may no longer be seen, fetch again what may now be seen, and redraw the app
+      var hide = HIDE(r.user.perms || {}), st = cloud.d.transaction(['docs', 'meta'], 'readwrite');
+      Object.keys(cloud.cols).forEach(function (c) { if (hide.indexOf(c) >= 0) { cloud.col(c).forEach(function (d, i) { st.objectStore('docs').delete(KEY(c, i)); }); cloud.cols[c] = new Map(); } });
+      cloud.cursor = 0; st.objectStore('meta').put(0, 'cursor');
+      say(fromServer ? 'صاحب المحل غيّر صلاحياتك — جاري التحديث' : 'تحدثت صلاحياتك');
+      setTimeout(function () { cloud.pull().then(function () { location.reload(); }); }, 600);
+    }).catch(function (e) { if (e && (e.status === 401 || e.status === 403)) relogin(e); });
+  }
   // the Windows program keeps its own live line (it notifies even with the window closed)
   function desktopSession() { try { if (window.dukkanDesktop && window.dukkanDesktop.session) window.dukkanDesktop.session(sess ? {token: sess.token, shop: sess.shop.id, phone: sess.user.phone, name: sess.shop.name} : null); } catch (e) {} }
 
@@ -374,7 +393,7 @@
         LS.set('dk:lastPhone', phone);
         var sameShop = old && old.shop && old.shop.id === res.shop.id;
         sess = {token: res.token, user: res.user, shop: res.shop};
-        LS.set('dk:session', JSON.stringify(sess)); LS.del('dk:mode');
+        LS.set('dk:session', JSON.stringify(sess)); LS.del('dk:mode'); setRole();
         o.remove();
         if (again && cloud && sameShop) { cloud.s = sess; cloud.dead = false; cloud.wsDead = false; cloud.flush(); cloud.pull(); cloud.live(); desktopSession(); say('رجعت لحسابك ✓'); return; }
         if (again) { location.reload(); return; }
@@ -424,7 +443,7 @@
       + '<div class="dk-row"><span>' + (owner ? 'صاحب المحل' : 'عامل') + '</span><b>' + esc(u.name) + ' · <span class="num">' + esc(u.phone) + '</span></b></div>'
       + '<div class="dk-note" id="dkSync"></div>'
       + '<div class="dk-row"><span>الإشعارات على هذا الجهاز</span><b id="dkPushSt">...</b></div><div id="dkPushBox"></div>'
-      + (owner ? '<button type="button" class="btn ghost dk-btn" id="dkTeam">العمال وحساباتهم</button><div id="dkTeamBox"></div>' : '')
+      + (owner ? '<button type="button" class="btn ghost dk-btn" id="dkTeam">العمال: حساباتهم، صلاحياتهم ورواتبهم</button><div id="dkTeamBox"></div>' : '<div id="dkMySal"></div>')
       + '<button type="button" class="btn ghost dk-btn" id="dkOut" style="color:#BE123C">تسجيل خروج</button>';
   };
   window.__dkAccountBind = function () {
@@ -442,8 +461,26 @@
     };
     var tb = document.getElementById('dkTeam');
     if (tb) tb.onclick = function () { team(document.getElementById('dkTeamBox')); };
+    var ms = document.getElementById('dkMySal');
+    if (ms) call('/salary').then(function (r) { ms.innerHTML = salaryHTML(r, true); }).catch(function () { ms.innerHTML = ''; });
   };
   var confirmOut = false;
+  var M = function (n) { return Math.round(+n || 0).toLocaleString('en-US'); };
+  var MONTH = function (d) { var m = ['كانون الثاني', 'شباط', 'آذار', 'نيسان', 'أيار', 'حزيران', 'تموز', 'آب', 'أيلول', 'تشرين الأول', 'تشرين الثاني', 'كانون الأول']; var p = String(d || '').split('-'); return p.length >= 2 ? m[+p[1] - 1] + ' ' + p[0] : ''; };
+  function salaryHTML(r, mine) {
+    var thisM = new Date().toISOString().slice(0, 7), got = r.pays.filter(function (p) { return p.month === thisM; }).reduce(function (t, p) { return t + p.amount; }, 0);
+    return '<div class="dk-sal"><div class="dk-row"><span>' + (mine ? 'راتبك الشهري' : 'الراتب الشهري') + '</span><b class="num">' + (r.salary ? M(r.salary) + ' د.ع' : 'ما محدد') + '</b></div>'
+      + '<div class="dk-row"><span>استلم هذا الشهر</span><b class="num">' + M(got) + ' د.ع' + (r.salary ? (got >= r.salary ? ' ✓' : ' · الباقي ' + M(r.salary - got)) : '') + '</b></div>'
+      + (r.pays.length ? '<details><summary>سجل الرواتب</summary>' + r.pays.slice(0, 12).map(function (p) { return '<div class="dk-row small"><span>' + esc(MONTH(p.month)) + ' · <span class="num">' + esc(p.date) + '</span></span><b class="num">' + M(p.amount) + '</b></div>'; }).join('') + '</details>' : '') + '</div>';
+  }
+  var PERM_L = [['sell', 'يبيع (فواتير بيع)'], ['pay', 'يسجل دفعات وأقساط'], ['customers', 'يضيف ويعدل العملاء'], ['products', 'يضيف المنتجات ويغيّر أسعارها'], ['returns', 'يرجّع منتجات ويلغي فواتير'], ['purchases', 'المشتريات والموردين'], ['money', 'يشوف الفلوس: الصندوق، الصرفيات، الأرباح، أسعار الشراء والمجاميع']];
+  function payOne(phone, name, amount, box) {
+    if (typeof put !== 'function') { say('افتح التطبيق وجرّب', false); return Promise.resolve(); }
+    var d = new Date(), date = d.toISOString().slice(0, 10), month = date.slice(0, 7);
+    try { if (typeof setLog === 'function') setLog('تسليم راتب: ' + name + ' — ' + M(amount) + ' د.ع (' + MONTH(month) + ')', 'add'); } catch (e) {}
+    return put('expenses', {category: 'رواتب', amount: amount, date: date, desc: 'راتب ' + name + ' — ' + MONTH(month), payee: name, worker: phone, month: month, createdAt: Date.now()})
+      .then(function () { say('انسجل الراتب كصرفية ✓'); team(box); });
+  }
   function paintPush() {
     var st = document.getElementById('dkPushSt'), box = document.getElementById('dkPushBox'); if (!st) return;
     pushState().then(function (s) {
@@ -468,16 +505,35 @@
       box.innerHTML = '<div class="dk-team">' + L.map(function (m) {
         return '<div class="dk-m"><div><b>' + esc(m.name) + '</b> <span class="num">' + esc(m.phone) + '</span><small>' + (m.role === 'owner' ? 'صاحب المحل' : m.active ? 'عامل' : 'عامل — موقوف') + '</small></div>'
           + (m.role === 'owner' ? '<button type="button" data-pw="' + m.phone + '">كلمة سر جديدة</button>'
-            : '<button type="button" data-pw="' + m.phone + '">كلمة سر</button><button type="button" data-act="' + m.phone + '" data-v="' + (m.active ? 0 : 1) + '">' + (m.active ? 'إيقاف' : 'تفعيل') + '</button><button type="button" data-rm="' + m.phone + '" class="r">حذف</button>') + '</div>';
+            : '<button type="button" data-pw="' + m.phone + '">كلمة سر</button><button type="button" data-act="' + m.phone + '" data-v="' + (m.active ? 0 : 1) + '">' + (m.active ? 'إيقاف' : 'تفعيل') + '</button><button type="button" data-rm="' + m.phone + '" class="r">حذف</button>'
+              + '<details class="dk-perm" data-ph="' + m.phone + '"><summary>الصلاحيات</summary>' + PERM_L.map(function (p) { return '<label><input type="checkbox" data-pk="' + p[0] + '"' + (m.perms && m.perms[p[0]] ? ' checked' : '') + '> ' + p[1] + '</label>'; }).join('') + '</details>'
+              + '<details class="dk-perm dk-salbox" data-ph="' + m.phone + '" data-nm="' + esc(m.name) + '"><summary>الراتب' + (m.salary ? ' · <span class="num">' + M(m.salary) + '</span>' : '') + '</summary><div class="dk-pw"><input class="l" inputmode="numeric" placeholder="الراتب الشهري" value="' + (m.salary || '') + '"><button type="button" data-salset>حفظ</button></div><div class="dk-salinfo"></div><div class="dk-pw"><input class="l" inputmode="numeric" placeholder="مبلغ التسليم" value="' + (m.salary || '') + '"><button type="button" data-salpay>سلّم الراتب</button></div></details>') + '</div>';
       }).join('') + '</div>'
         + '<div class="dk-add"><b>إضافة عامل</b><input id="dkAn" placeholder="اسم العامل"><input id="dkAp" class="l" inputmode="tel" placeholder="رقم تلفونه 07xxxxxxxxx"><input id="dkAw" placeholder="كلمة سر (6 حروف أو أكثر)"><button type="button" class="btn pri dk-btn" id="dkAg">أضف العامل</button><div class="dk-er" id="dkAe"></div></div>'
-        + '<div class="dk-note">العامل يدخل برقمه وكلمة السر، ويشوف بيانات المحل نفسها. ما يگدر يغيّر الإعدادات أو الأسعار بدون رمزك.</div>';
+        + '<div class="dk-note">العامل يدخل برقمه وكلمة السر. افتح «الصلاحيات» تحت اسمه وحدد شنو يگدر يسوي. بدون صلاحية «الفلوس» ما يشوف الصندوق ولا الصرفيات ولا الأرباح ولا مجاميع الديون، بس يشوف دين كل زبون لحاله حتى يتابعه.</div>';
       var err = box.querySelector('#dkAe');
       box.querySelector('#dkAg').onclick = function () {
         var b = this; b.disabled = true;
         call('/members/add', {name: box.querySelector('#dkAn').value, phone: toEn(box.querySelector('#dkAp').value), password: box.querySelector('#dkAw').value})
           .then(function () { say('انضاف العامل ✓'); team(box); }).catch(function (e) { err.textContent = e.message; b.disabled = false; });
       };
+      box.querySelectorAll('.dk-perm[data-ph] input[data-pk]').forEach(function (c) {
+        c.onchange = function () {
+          var d = c.closest('.dk-perm'), perms = {}; d.querySelectorAll('input[data-pk]').forEach(function (x) { perms[x.dataset.pk] = x.checked; });
+          call('/members/set', {phone: d.dataset.ph, perms: perms}).then(function () { say('انحفظت الصلاحيات ✓ (تتطبق على أجهزته فوراً)'); }).catch(function (e) { say(e.message, false); c.checked = !c.checked; });
+        };
+      });
+      box.querySelectorAll('.dk-salbox').forEach(function (d) {
+        var ins = d.querySelectorAll('input'), info = d.querySelector('.dk-salinfo');
+        d.addEventListener('toggle', function () { if (d.open) call('/salary?phone=' + d.dataset.ph).then(function (r) { info.innerHTML = salaryHTML(r, false); }).catch(function () {}); });
+        d.querySelector('[data-salset]').onclick = function () { call('/members/set', {phone: d.dataset.ph, salary: +toEn(ins[0].value).replace(/\D/g, '') || 0}).then(function () { say('انحفظ الراتب ✓'); team(box); }).catch(function (e) { say(e.message, false); }); };
+        d.querySelector('[data-salpay]').onclick = function () {
+          var b = this, amt = +toEn(ins[1].value).replace(/\D/g, '') || 0;
+          if (!amt) { say('اكتب مبلغ التسليم', false); return; }
+          if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'تأكيد ' + M(amt) + '؟'; return; }
+          b.disabled = true; payOne(d.dataset.ph, d.dataset.nm, amt, box).catch(function (e) { say(e.message || 'ما انسجل', false); b.disabled = false; });
+        };
+      });
       box.querySelectorAll('[data-act]').forEach(function (b) { b.onclick = function () { call('/members/set', {phone: b.dataset.act, active: b.dataset.v === '1'}).then(function () { team(box); }).catch(function (e) { say(e.message, false); }); }; });
       box.querySelectorAll('[data-rm]').forEach(function (b) { b.onclick = function () { if (b.dataset.sure) { call('/members/remove', {phone: b.dataset.rm}).then(function () { say('انحذف'); team(box); }).catch(function (e) { say(e.message, false); }); } else { b.dataset.sure = 1; b.textContent = 'متأكد؟'; } }; });
       box.querySelectorAll('[data-pw]').forEach(function (b) {
@@ -504,6 +560,8 @@
       + '.dk-nt.out{opacity:0;transform:translateY(-8px)}.dk-nt img{width:36px;height:36px;border-radius:10px;flex:none}.dk-nt>div{flex:1;min-width:0}.dk-nt b{display:block;font-size:14.5px}.dk-nt span{display:block;font-size:13.5px;color:#475569;line-height:1.55}'
       + '.dk-nt .x{border:0;background:none;font-size:20px;line-height:1;color:#94A3B8;cursor:pointer;padding:0 4px}.dk-nt p{display:flex;gap:6px;margin:8px 0 0}.dk-nt p button{border:0;border-radius:10px;min-height:38px;padding:0 12px;font:inherit;font-size:13.5px;font-weight:700;cursor:pointer}.dk-nt p .y{background:#4338CA;color:#fff}.dk-nt p .n{background:#EEF2FF;color:#3730A3}'
       + '@keyframes dkIn{from{opacity:0;transform:translateY(-10px)}}@media(prefers-reduced-motion:reduce){.dk-nt{animation:none}}'
+      + '.dk-perm{flex:1 1 100%;background:#F8FAFC;border-radius:10px;padding:6px 10px}.dk-perm summary{cursor:pointer;font-weight:600;font-size:13.5px;color:#3730A3;padding:4px 0}.dk-perm label{display:flex;gap:8px;align-items:center;font-size:13.5px;padding:5px 0}.dk-perm input[type=checkbox]{width:18px;height:18px;accent-color:#4338CA}'
+      + '.dk-sal{display:grid;gap:4px}.dk-sal details summary{cursor:pointer;font-size:13px;color:#4338CA}.dk-row.small{font-size:13px}.dk-salinfo{margin:6px 0}'
       + '.dk-pw{display:flex;gap:6px;flex:1 1 100%}.dk-pw input,.dk-add input{flex:1;min-height:42px;border:1.5px solid #E2E8F0;border-radius:11px;padding:0 10px;font:inherit;font-size:16px}.dk-add{display:grid;gap:8px;margin-top:10px}.dk-add input.l{direction:ltr;text-align:right}.dk-er{color:#BE123C;font-size:13px;font-weight:600}';
     document.head.appendChild(st);
     // decide: an account, "trying without one", or the login screen

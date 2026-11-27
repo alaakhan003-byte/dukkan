@@ -154,6 +154,27 @@ export class Directory extends DurableObject {
 }
 
 /* ======================= one shop: its people and all its data ======================= */
+/* ---------- what a worker may do (the owner switches these per worker) ---------- */
+const PERMS = {
+  money: false,       // sees money: cash box, expenses, profits, buying prices, totals
+  sell: true,         // makes sales invoices
+  pay: true,          // records payments / instalments
+  customers: true,    // adds and edits customers
+  products: false,    // adds products and changes names / prices
+  returns: false,     // returns items and cancels invoices
+  purchases: false    // suppliers and purchase invoices
+};
+const permsOf = m => { if (!m || m.role === 'owner') return Object.fromEntries(Object.keys(PERMS).map(k => [k, true])); let o = {}; try { o = JSON.parse(m.perms || '{}'); } catch (e) {} return Object.fromEntries(Object.keys(PERMS).map(k => [k, typeof o[k] === 'boolean' ? o[k] : PERMS[k]])); };
+const MONEY_COLS = ['cash', 'expenses', 'closings', 'recurring', 'logs'], PUR_COLS = ['supplierTx', 'suppliers'];
+const hiddenFor = P => [...(P.money ? [] : MONEY_COLS), ...(P.purchases ? [] : PUR_COLS)];
+const COST_KEYS = ['buy', 'avgBuy', 'lastBuy', 'cost'];
+// a worker without "money" never receives buying prices (so profits can't be worked out)
+function stripCost(c, d) {
+  if (!d) return d;
+  if (c === 'products') { const o = {...d}; COST_KEYS.forEach(k => delete o[k]); return o; }
+  if (c === 'invoices') { const o = {...d}; if (Array.isArray(o.items)) o.items = o.items.map(it => { const x = {...it}; COST_KEYS.forEach(k => delete x[k]); return x; }); delete o.cost; delete o.profit; return o; }
+  return d;
+}
 const UNION = ['payments', 'returns'];   // lists merged item by item (by id), so two devices never drop each other's payment
 function mergeList(cur, mine, base) {
   cur = Array.isArray(cur) ? cur : []; mine = Array.isArray(mine) ? mine : []; base = Array.isArray(base) ? base : [];
@@ -175,6 +196,9 @@ export class Shop extends DurableObject {
         CREATE INDEX IF NOT EXISTS docs_s ON docs (s);
         CREATE TABLE IF NOT EXISTS subs (endpoint TEXT PRIMARY KEY, phone TEXT, p256dh TEXT, auth TEXT, ua TEXT, createdAt INTEGER);
         CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, by TEXT, title TEXT, body TEXT, kind TEXT);`);
+      const cols = this.sql.exec('PRAGMA table_info(members)').toArray().map(r => r.name);
+      if (!cols.includes('perms')) this.sql.exec('ALTER TABLE members ADD COLUMN perms TEXT');
+      if (!cols.includes('salary')) this.sql.exec('ALTER TABLE members ADD COLUMN salary INTEGER DEFAULT 0');
     });
   }
   kv(k, v) { if (v === undefined) return this.sql.exec('SELECT v FROM kv WHERE k = ?', k).toArray()[0]?.v ?? null; this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, String(v)); return v; }
@@ -188,7 +212,7 @@ export class Shop extends DurableObject {
     return true;
   }
   async token(m) { const id = this.kv('id'); return `${id}.${m.phone}.${m.ver}.${await hmac(this.kv('secret'), `${id}.${m.phone}.${m.ver}`)}`; }
-  pub(m) { return {phone: m.phone, name: m.name, role: m.role, active: !!m.active, createdAt: m.createdAt, lastSeen: m.lastSeen}; }
+  pub(m) { return {phone: m.phone, name: m.name, role: m.role, active: !!m.active, createdAt: m.createdAt, lastSeen: m.lastSeen, perms: permsOf(m), salary: m.salary || 0}; }
   async login(phone, password) {
     const inf = this.info(); if (!inf.id) throw new Fail('wrong', 'الرقم أو كلمة السر غلط', 401);
     const m = this.member(phone); if (!m) throw new Fail('wrong', 'الرقم أو كلمة السر غلط', 401);
@@ -220,22 +244,35 @@ export class Shop extends DurableObject {
   }
   /* --- data --- */
   async me(token) { const m = await this.need(token); const inf = this.info(); return {user: this.pub(m), shop: {id: inf.id, name: inf.name}, seq: +this.kv('seq')}; }
+  // the worker's own salary and what he received (taken from the shop's expenses marked with his phone)
+  async mySalary(token, phone) {
+    const m = await this.need(token); phone = phone ? normPhone(phone) : m.phone;
+    if (phone !== m.phone && m.role !== 'owner') throw new Fail('owner', 'هذا الشي لصاحب المحل بس', 403);
+    const who = this.member(phone); if (!who) throw new Fail('nomember', 'ما لگيت هذا الشخص', 404);
+    const pays = this.sql.exec("SELECT d FROM docs WHERE c = 'expenses' AND del = 0").toArray().map(r => JSON.parse(r.d)).filter(e => e && e.worker === phone && !e.void)
+      .map(e => ({amount: +e.amount || 0, date: e.date, desc: e.desc || '', month: e.month || String(e.date || '').slice(0, 7)})).sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 36);
+    return {salary: who.salary || 0, pays};
+  }
+  view(m, c, d) { const P = permsOf(m); return P.money ? d : stripCost(c, d); }
   async pull(token, since, limit = 800) {
-    await this.need(token);
+    const m = await this.need(token), hide = hiddenFor(permsOf(m));
     since = Math.max(0, +since || 0); limit = Math.min(2000, Math.max(50, +limit || 800));
     const rows = this.sql.exec('SELECT c, i, d, s, del FROM docs WHERE s > ? ORDER BY s LIMIT ?', since, limit).toArray();
     const seq = rows.length ? rows[rows.length - 1].s : Math.max(since, +this.kv('seq'));
-    return {changes: rows.map(r => ({c: r.c, i: r.i, s: r.s, d: r.del ? null : JSON.parse(r.d)})), seq, more: rows.length === limit};
+    // a worker's device never even receives the shop's money records
+    return {changes: rows.filter(r => !hide.includes(r.c)).map(r => ({c: r.c, i: r.i, s: r.s, d: r.del ? null : this.view(m, r.c, JSON.parse(r.d))})), seq, more: rows.length === limit};
   }
   async getDoc(token, c, i) {
-    await this.need(token);
+    const m = await this.need(token);
+    if (hiddenFor(permsOf(m)).includes(c)) return {d: null, s: 0};
     const r = this.sql.exec('SELECT d, s, del FROM docs WHERE c = ? AND i = ?', c, i).toArray()[0];
-    return r && !r.del ? {d: JSON.parse(r.d), s: r.s} : {d: null, s: r?.s || 0};
+    return r && !r.del ? {d: this.view(m, c, JSON.parse(r.d)), s: r.s} : {d: null, s: r?.s || 0};
   }
   async query(token, c, field, value) {
-    await this.need(token);
+    const m = await this.need(token);
+    if (hiddenFor(permsOf(m)).includes(c)) return [];
     return this.sql.exec('SELECT i, d, s FROM docs WHERE c = ? AND del = 0', c).toArray()
-      .map(r => ({i: r.i, s: r.s, d: JSON.parse(r.d)})).filter(r => JSON.stringify(r.d?.[field]) === JSON.stringify(value));
+      .map(r => ({i: r.i, s: r.s, d: JSON.parse(r.d)})).filter(r => JSON.stringify(r.d?.[field]) === JSON.stringify(value)).map(r => ({...r, d: this.view(m, c, r.d)}));
   }
   async push(token, ops) {
     const m = await this.need(token);
@@ -247,6 +284,14 @@ export class Shop extends DurableObject {
       if (c === 'settings' && m.role !== 'owner') { done.push({k: op.k, ok: false, err: 'owner'}); continue; }   // like the rule in Claude: settings are the owner's
       const row = this.sql.exec('SELECT d, del FROM docs WHERE c = ? AND i = ?', c, i).toArray()[0];
       const cur = row && !row.del ? JSON.parse(row.d) : null;
+      const why = m.role === 'owner' ? '' : this.refuse(m, c, cur, op);
+      if (why) { done.push({k: op.k, ok: false, err: 'perm', msg: why}); continue; }
+      if (m.role !== 'owner' && !permsOf(m).money && op.d && typeof op.d === 'object') {
+        // the worker's copy has no buying prices: put them back from the shop's own records, so the owner's profits stay right
+        if (c === 'products' && cur) COST_KEYS.forEach(k => { if (k in cur) { op.d[k] = cur[k]; if (op.b) op.b[k] = cur[k]; } });
+        if (c === 'invoices') op.d = this.fillCost(op.d, cur);
+        if (c === 'invoices' && op.b) op.b = {...op.b, items: op.d.items};
+      }
       let out;
       if (op.t === 'del') out = null;
       else {
@@ -260,22 +305,57 @@ export class Shop extends DurableObject {
             if (dv === bv) continue;
             if (k === 'stock' && typeof d[k] === 'number' && typeof b[k] === 'number' && typeof cur[k] === 'number') out[k] = Math.max(0, cur[k] + (d[k] - b[k]));
             else if (UNION.includes(k)) out[k] = mergeList(cur[k], d[k], b[k]);
-            else if (!(k in d)) delete out[k];
+            else if (!(k in d)) { if (k !== 'by' && k !== 'byName') delete out[k]; }   // who sold stays, even if an older copy forgot it
             else out[k] = d[k];
           }
         }
       }
       const txt = out ? JSON.stringify(out) : 'null';
       if (txt.length > 1900000) { done.push({k: op.k, ok: false, err: 'big'}); continue; }
+      if (c === 'invoices' && out && !cur && !out.by) out = {...out, by: m.phone, byName: m.name || ''};   // who made the sale
       if (c === 'invoices') news.push(...invoiceNews(cur, out, who));
       seq++;
       this.sql.exec('INSERT INTO docs (c, i, d, s, del, by) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(c, i) DO UPDATE SET d = excluded.d, s = excluded.s, del = excluded.del, by = excluded.by', c, i, txt, seq, out ? 0 : 1, m.phone);
-      done.push({k: op.k, ok: true, s: seq, d: out});
+      done.push({k: op.k, ok: true, s: seq, d: this.view(m, c, out)});
     }
     this.kv('seq', seq);
     this.broadcast({t: 'c', seq, by: m.phone});   // other open devices fetch the change at once
     if (news.length) this.ctx.waitUntil(this.announce(news, m.phone));
     return {done, seq};
+  }
+  // what a worker is NOT allowed to change (checked here on the server, not only hidden on the screen)
+  refuse(m, c, cur, op) {
+    const P = permsOf(m), d = op.d || {};
+    if (MONEY_COLS.includes(c) && c !== 'logs' && !P.money) return 'الصندوق والصرفيات لصاحب المحل';
+    if (c === 'logs' && (op.t === 'del' || cur)) return 'السجل ما ينعدل';   // a worker adds to the record, never changes it
+    if (PUR_COLS.includes(c) && !P.purchases) return 'المشتريات لصاحب المحل';
+    if (c === 'customers' && op.t === 'del') return 'حذف العملاء لصاحب المحل';
+    if (c === 'customers' && !P.customers) return 'إضافة وتعديل العملاء لصاحب المحل';
+    if (c === 'products') {
+      if (op.t === 'del' || !cur) return P.products ? '' : 'إضافة المنتجات لصاحب المحل';
+      if (!P.products) { const ok = ['stock', 'stkMarks', 'purMarks', 'imeiAdded', 'updatedAt', 'stockPending', 'stockDone']; const b = op.b || {}; for (const k of new Set([...Object.keys(d), ...Object.keys(b)])) if (!ok.includes(k) && !COST_KEYS.includes(k) && JSON.stringify(d[k] ?? null) !== JSON.stringify(b[k] ?? null)) return 'تعديل المنتجات وأسعارها لصاحب المحل'; }   // empty and missing count as the same
+    }
+    if (c === 'invoices') {
+      if (op.t === 'del') return 'حذف الفواتير لصاحب المحل';
+      if (!cur && !P.sell) return 'البيع مو من صلاحياتك';
+      if (cur) {
+        if (!P.returns && ((d.void && !cur.void) || (d.returns || []).length > (cur.returns || []).length || (d.returns || []).some(r => r.void && !(cur.returns || []).find(x => x.id === r.id && x.void)))) return 'الإرجاع والإلغاء لصاحب المحل';
+        if (!P.pay && (d.payments || []).length > (cur.payments || []).length) return 'تسجيل الدفعات مو من صلاحياتك';
+      }
+    }
+    return '';
+  }
+  fillCost(d, cur) {
+    if (!d || !Array.isArray(d.items)) return d;
+    const items = d.items.map((it, n) => {
+      if (it.buy != null) return it;
+      const was = cur && Array.isArray(cur.items) ? (cur.items.find(x => x.pid && x.pid === it.pid) || cur.items[n]) : null;
+      if (was && was.buy != null && (!was.pid || was.pid === it.pid)) return {...it, buy: was.buy};
+      const p = it.pid ? this.sql.exec("SELECT d FROM docs WHERE c = 'products' AND i = ? AND del = 0", it.pid).toArray()[0] : null;
+      const buy = p ? JSON.parse(p.d).buy : null;
+      return buy != null ? {...it, buy} : it;
+    });
+    return {...d, items};
   }
   /* --- live connection (WebSocket): changes and news reach open devices within a second --- */
   async fetch(req) {
@@ -353,6 +433,13 @@ export class Shop extends DurableObject {
     if (patch.password != null) { if (!okPass(patch.password)) throw new Fail('weak', 'كلمة السر لازم 6 حروف أو أكثر'); const salt = rand(16); this.sql.exec('UPDATE members SET hash = ?, salt = ?, ver = ver + 1, fails = 0, lockUntil = 0 WHERE phone = ?', await pbkdf2(patch.password, salt), salt, phone); }
     if (patch.active != null) { if (m.role === 'owner') throw new Fail('owner', 'ما تگدر توقف صاحب المحل'); this.sql.exec('UPDATE members SET active = ?, ver = ver + 1 WHERE phone = ?', patch.active ? 1 : 0, phone); }
     if (patch.name != null) { const n = clean(patch.name); if (n.length >= 2) this.sql.exec('UPDATE members SET name = ? WHERE phone = ?', n, phone); }
+    if (patch.perms && typeof patch.perms === 'object' && m.role !== 'owner') {
+      const cur = permsOf(m), next = Object.fromEntries(Object.keys(PERMS).map(k => [k, typeof patch.perms[k] === 'boolean' ? patch.perms[k] : cur[k]]));
+      this.sql.exec('UPDATE members SET perms = ? WHERE phone = ?', JSON.stringify(next), phone);
+      const hadMoney = cur.money || cur.purchases, nowMoney = next.money || next.purchases;
+      if (JSON.stringify(cur) !== JSON.stringify(next)) this.broadcast({t: 'perm', phone, full: !hadMoney && nowMoney});   // his devices reload what they may see
+    }
+    if (patch.salary != null) { const v = Math.max(0, Math.min(1e9, Math.round(+patch.salary || 0))); this.sql.exec('UPDATE members SET salary = ? WHERE phone = ?', v, phone); }
     const out = this.pub(this.member(phone));
     if (phone === me.phone && patch.password != null) out.token = await this.token(this.member(phone));   // you stay logged in after changing your own password
     return out;
@@ -398,6 +485,7 @@ async function api(req, env, url) {
     return shopOf(env, r.shop).login(phone, body.password);
   }
   if (p === '/me') return shopFromToken(env, t).me(t);
+  if (p === '/salary') return shopFromToken(env, t).mySalary(t, q('phone'));
   if (p === '/pull') return shopFromToken(env, t).pull(t, q('since'), q('limit'));
   if (p === '/push' && req.method === 'POST') return shopFromToken(env, t).push(t, body.ops);
   if (p === '/doc') return shopFromToken(env, t).getDoc(t, q('c'), q('i'));

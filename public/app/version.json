@@ -1,12 +1,12 @@
 {
-  "version": "2026.11.27-2128",
+  "version": "2026.11.27-2208",
   "exe": "https://github.com/alaakhan003-byte/dukkan/releases/latest/download/Dukkan-Setup.exe",
   "repo": "alaakhan003-byte/dukkan",
   "files": [
     {
       "path": "cloud.js",
-      "size": 42292,
-      "sha256": "238190588c45878655214b33af481714f7cafc9358ad18ced567a8640ea024f8"
+      "size": 50223,
+      "sha256": "70010953bb089e91e65f68730d09dd6d9cc0408769f163d3026ff4ecd0eea1b0"
     },
     {
       "path": "icons/apple-touch-icon.png",
@@ -35,8 +35,8 @@
     },
     {
       "path": "index.html",
-      "size": 757199,
-      "sha256": "ad554f6b51e9018fac162294d84488bd98e0e1d1848b8b076456539a842e6a99"
+      "size": 768045,
+      "sha256": "ba8c966f364cd349c31c10ed0bfe8e832d989d1fcc8ab396a075ce277efbbf9e"
     },
     {
       "path": "manifest.webmanifest",
@@ -46,7 +46,7 @@
     {
       "path": "site.js",
       "size": 14870,
-      "sha256": "248efe6af5cfb7364c2be1bee3709792d28c2605fe91c08bb07a718a8066c090"
+      "sha256": "1941a8b2d646808e3a9cdfa7be85c75c6698d20f6a80fccc128f1bfaed70b6ba"
     },
     {
       "path": "vendor/zxing.min.js",
