@@ -58,3 +58,17 @@ jobs:
           --repo ${{ github.repository }} --latest
           --title "دكّان للحاسبة 1.0.${{ github.run_number }}"
           --notes "نسخة ويندوز من دكّان. التطبيق كله داخل البرنامج ويشتغل بدون إنترنت، والتحديثات توصل لحالها."
+
+      - name: Remove broken or half-made old releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $rs = gh api "repos/${{ github.repository }}/releases?per_page=100" | ConvertFrom-Json
+          foreach ($r in $rs) {
+            $names = @($r.assets | ForEach-Object { $_.name })
+            if ($r.draft -or -not ($names -contains 'latest.yml') -or $r.tag_name -like 'desktop-*') {
+              Write-Host "removing $($r.tag_name) ($($r.id))"
+              gh api -X DELETE "repos/${{ github.repository }}/releases/$($r.id)"
+            }
+          }
