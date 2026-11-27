@@ -22,10 +22,43 @@
     "appId": "app.dukkan.desktop",
     "productName": "Dukkan",
     "artifactName": "Dukkan-Setup.${ext}",
-    "directories": {"output": "dist"},
-    "files": ["main.js", "preload.js", "config.json", "icon.png", "app/**/*"],
-    "win": {"target": [{"target": "nsis", "arch": ["x64"]}], "icon": "icon.ico"},
-    "nsis": {"oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "Dukkan", "runAfterFinish": true, "deleteAppDataOnUninstall": false},
-    "publish": [{"provider": "github", "owner": "alaakhan003-byte", "repo": "dukkan", "releaseType": "release"}]
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "config.json",
+      "icon.png",
+      "app/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Dukkan",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "alaakhan003-byte",
+        "repo": "dukkan",
+        "releaseType": "draft"
+      }
+    ]
   }
 }
