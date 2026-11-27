@@ -26,7 +26,11 @@
       body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
-        if (!r.ok) { var e = new Error(j.msg || 'صار خطأ'); e.code = j.error || 'http'; e.status = r.status; throw e; }
+        if (!r.ok) {
+          // no clear answer from the server (busy or over its limit for a moment): say so plainly
+          var busy = !j.msg && r.status >= 500;
+          var e = new Error(j.msg || (busy ? 'السيرفر مشغول هسه. جرّب مرة ثانية بعد ثواني' : 'صار خطأ')); e.code = j.error || (busy ? 'busy' : 'http'); e.status = r.status; throw e;
+        }
         return j;
       });
     }, function (e) { var x = new Error('ما أكو اتصال بالسيرفر'); x.code = 'offline'; throw x; }).finally(function () { clearTimeout(t); });
@@ -389,7 +393,8 @@
       if (navigator.onLine === false) { r.textContent = 'أول دخول يحتاج إنترنت. اتصل وجرّب'; return; }
       g.disabled = true; g.textContent = 'جاري الدخول...'; r.textContent = '';
       var old = sess; sess = null;
-      call('/login', {phone: phone, password: w.value}).then(function (res) {
+      var once = function () { return call('/login', {phone: phone, password: w.value}); };
+      once().catch(function (e) { if (e && e.code === 'busy') return new Promise(function (ok) { setTimeout(ok, 900); }).then(once); throw e; }).then(function (res) {   // a busy server gets one quiet second try
         LS.set('dk:lastPhone', phone);
         var sameShop = old && old.shop && old.shop.id === res.shop.id;
         sess = {token: res.token, user: res.user, shop: res.shop};

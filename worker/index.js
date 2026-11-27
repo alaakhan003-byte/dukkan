@@ -23,6 +23,22 @@ async function hmac(key, msg) {
 class Fail extends Error { constructor(code, msg, status = 400) { super(`FAIL|${status}|${code}|${msg}`); this.code = code; this.status = status; this.msg = msg; } }
 const readFail = e => { const m = /^FAIL\|(\d+)\|([\w-]+)\|([\s\S]*)$/.exec(String(e?.message || '')); return m ? {status: +m[1], code: m[2], msg: m[3]} : null; };
 const LOCK = [5, 5 * 60 * 1000];   // 5 wrong passwords → 5 minutes wait
+// wrong passwords lock only the device (internet address) that typed them, so a stranger can't lock the real owner out.
+// A second, bigger counter for the number itself stops guessing from many places at once.
+const LOCK_ALL = [30, 15 * 60 * 1000];
+const ipKey = ip => String(ip || 'x').slice(0, 64);
+function triesLocked(sql, keys) { const now = Date.now(); return keys.some(k => (sql.exec('SELECT lockUntil FROM tries WHERE k = ?', k).toArray()[0]?.lockUntil || 0) > now); }
+function triesFail(sql, keys) {
+  const now = Date.now();
+  for (const k of keys) {
+    const [n, wait] = k.startsWith('all:') ? LOCK_ALL : LOCK;
+    const r = sql.exec('SELECT fails, at FROM tries WHERE k = ?', k).toArray()[0];
+    const f = (r && now - r.at < wait * 2 ? r.fails : 0) + 1;
+    sql.exec('INSERT INTO tries (k, fails, lockUntil, at) VALUES (?, ?, ?, ?) ON CONFLICT(k) DO UPDATE SET fails = excluded.fails, lockUntil = excluded.lockUntil, at = excluded.at', k, f >= n ? 0 : f, f >= n ? now + wait : 0, now);
+  }
+  sql.exec('DELETE FROM tries WHERE at < ? AND lockUntil < ?', now - 86400000, now);
+}
+function triesOk(sql, keys) { for (const k of keys) if (k.startsWith('ip:')) sql.exec('DELETE FROM tries WHERE k = ?', k); }
 
 /* ---------- real notifications (Web Push: phones and browsers, even with the app closed) ---------- */
 const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -76,7 +92,8 @@ export class Directory extends DurableObject {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY, hash TEXT, salt TEXT, secret TEXT, fails INTEGER DEFAULT 0, lockUntil INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS phones (phone TEXT PRIMARY KEY, shop TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS shops (id TEXT PRIMARY KEY, name TEXT, owner TEXT, ownerName TEXT, createdAt INTEGER, disabled INTEGER DEFAULT 0, note TEXT);
-        CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);`);
+        CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS tries (k TEXT PRIMARY KEY, fails INTEGER DEFAULT 0, lockUntil INTEGER DEFAULT 0, at INTEGER DEFAULT 0);`);
     });
   }
   // the app's own notification keys (made once)
@@ -98,14 +115,12 @@ export class Directory extends DurableObject {
     this.sql.exec('INSERT INTO admin (id, hash, salt, secret) VALUES (1, ?, ?, ?)', a.hash, a.salt, a.secret);
     return {token: await this.adminToken(a)};
   }
-  async adminLogin(password) {
+  async adminLogin(password, ip) {
     const a = this.adminRow(); if (!a) throw new Fail('nosetup', 'ما مسوّي كلمة سر للمدير بعد', 404);
-    if (a.lockUntil > Date.now()) throw new Fail('locked', 'محاولات غلط هواية. انتظر كم دقيقة', 429);
-    if (!same(await pbkdf2(String(password || ''), a.salt), a.hash)) {
-      const f = a.fails + 1; this.sql.exec('UPDATE admin SET fails = ?, lockUntil = ? WHERE id = 1', f >= LOCK[0] ? 0 : f, f >= LOCK[0] ? Date.now() + LOCK[1] : 0);
-      throw new Fail('wrong', 'كلمة السر غلط', 401);
-    }
-    this.sql.exec('UPDATE admin SET fails = 0, lockUntil = 0 WHERE id = 1');
+    const keys = ['ip:admin|' + ipKey(ip), 'all:admin'];
+    if (triesLocked(this.sql, keys)) throw new Fail('locked', 'محاولات غلط هواية. انتظر كم دقيقة', 429);
+    if (!same(await pbkdf2(String(password || ''), a.salt), a.hash)) { triesFail(this.sql, keys); throw new Fail('wrong', 'كلمة السر غلط', 401); }
+    triesOk(this.sql, keys);
     return {token: await this.adminToken(a)};
   }
   async adminCheck(token) {
@@ -195,7 +210,9 @@ export class Shop extends DurableObject {
         CREATE TABLE IF NOT EXISTS docs (c TEXT NOT NULL, i TEXT NOT NULL, d TEXT, s INTEGER NOT NULL, del INTEGER DEFAULT 0, by TEXT, PRIMARY KEY (c, i));
         CREATE INDEX IF NOT EXISTS docs_s ON docs (s);
         CREATE TABLE IF NOT EXISTS subs (endpoint TEXT PRIMARY KEY, phone TEXT, p256dh TEXT, auth TEXT, ua TEXT, createdAt INTEGER);
-        CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, by TEXT, title TEXT, body TEXT, kind TEXT);`);
+        CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, by TEXT, title TEXT, body TEXT, kind TEXT);
+        CREATE TABLE IF NOT EXISTS tries (k TEXT PRIMARY KEY, fails INTEGER DEFAULT 0, lockUntil INTEGER DEFAULT 0, at INTEGER DEFAULT 0);
+        CREATE INDEX IF NOT EXISTS docs_inv_no ON docs (c, json_extract(d, '$.no'));`);
       const cols = this.sql.exec('PRAGMA table_info(members)').toArray().map(r => r.name);
       if (!cols.includes('perms')) this.sql.exec('ALTER TABLE members ADD COLUMN perms TEXT');
       if (!cols.includes('salary')) this.sql.exec('ALTER TABLE members ADD COLUMN salary INTEGER DEFAULT 0');
@@ -213,17 +230,16 @@ export class Shop extends DurableObject {
   }
   async token(m) { const id = this.kv('id'); return `${id}.${m.phone}.${m.ver}.${await hmac(this.kv('secret'), `${id}.${m.phone}.${m.ver}`)}`; }
   pub(m) { return {phone: m.phone, name: m.name, role: m.role, active: !!m.active, createdAt: m.createdAt, lastSeen: m.lastSeen, perms: permsOf(m), salary: m.salary || 0}; }
-  async login(phone, password) {
+  async login(phone, password, ip) {
     const inf = this.info(); if (!inf.id) throw new Fail('wrong', 'الرقم أو كلمة السر غلط', 401);
     const m = this.member(phone); if (!m) throw new Fail('wrong', 'الرقم أو كلمة السر غلط', 401);
-    if (m.lockUntil > Date.now()) throw new Fail('locked', 'محاولات غلط هواية. انتظر 5 دقايق وجرّب', 429);
-    if (!same(await pbkdf2(String(password || ''), m.salt), m.hash)) {
-      const f = m.fails + 1; this.sql.exec('UPDATE members SET fails = ?, lockUntil = ? WHERE phone = ?', f >= LOCK[0] ? 0 : f, f >= LOCK[0] ? Date.now() + LOCK[1] : 0, phone);
-      throw new Fail('wrong', 'الرقم أو كلمة السر غلط', 401);
-    }
+    const keys = ['ip:' + phone + '|' + ipKey(ip), 'all:' + phone];
+    if (triesLocked(this.sql, keys)) throw new Fail('locked', 'محاولات غلط هواية من هذا الجهاز. انتظر 5 دقايق وجرّب', 429);
+    if (!same(await pbkdf2(String(password || ''), m.salt), m.hash)) { triesFail(this.sql, keys); throw new Fail('wrong', 'الرقم أو كلمة السر غلط', 401); }
+    triesOk(this.sql, keys);
     if (inf.disabled) throw new Fail('disabled', 'حساب المحل موقوف. راجع صاحب التطبيق', 403);
     if (!m.active) throw new Fail('inactive', 'حسابك موقوف. راجع صاحب المحل', 403);
-    this.sql.exec('UPDATE members SET fails = 0, lockUntil = 0, lastSeen = ? WHERE phone = ?', Date.now(), phone);
+    this.sql.exec('UPDATE members SET lastSeen = ? WHERE phone = ?', Date.now(), phone);
     return {token: await this.token(m), user: this.pub(m), shop: {id: inf.id, name: inf.name}};
   }
   async auth(token) {
@@ -253,7 +269,10 @@ export class Shop extends DurableObject {
       .map(e => ({amount: +e.amount || 0, date: e.date, desc: e.desc || '', month: e.month || String(e.date || '').slice(0, 7)})).sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 36);
     return {salary: who.salary || 0, pays};
   }
-  view(m, c, d) { const P = permsOf(m); return P.money ? d : stripCost(c, d); }
+  view(m, c, d) {
+    if (c === 'settings' && d && m.role !== 'owner' && ('pinHash' in d)) { d = {...d}; delete d.pinHash; }   // the manager code stays with the owner
+    const P = permsOf(m); return P.money ? d : stripCost(c, d);
+  }
   async pull(token, since, limit = 800) {
     const m = await this.need(token), hide = hiddenFor(permsOf(m));
     since = Math.max(0, +since || 0); limit = Math.min(2000, Math.max(50, +limit || 800));
@@ -271,21 +290,28 @@ export class Shop extends DurableObject {
   async query(token, c, field, value) {
     const m = await this.need(token);
     if (hiddenFor(permsOf(m)).includes(c)) return [];
-    return this.sql.exec('SELECT i, d, s FROM docs WHERE c = ? AND del = 0', c).toArray()
+    // the database looks the value up itself (fast, even with thousands of invoices); the exact check below stays the same
+    const fast = /^\w{1,40}$/.test(String(field || '')) && (typeof value === 'string' || (typeof value === 'number' && isFinite(value)));
+    const rows = !fast ? this.sql.exec('SELECT i, d, s FROM docs WHERE c = ? AND del = 0', c)
+      : field === 'no' ? this.sql.exec("SELECT i, d, s FROM docs WHERE c = ? AND json_extract(d, '$.no') = ? AND del = 0", c, value)
+      : this.sql.exec('SELECT i, d, s FROM docs WHERE c = ? AND json_extract(d, ?) = ? AND del = 0', c, '$.' + field, value);
+    return rows.toArray()
       .map(r => ({i: r.i, s: r.s, d: JSON.parse(r.d)})).filter(r => JSON.stringify(r.d?.[field]) === JSON.stringify(value)).map(r => ({...r, d: this.view(m, c, r.d)}));
   }
   async push(token, ops) {
     const m = await this.need(token);
     if (!Array.isArray(ops) || ops.length > 500) throw new Fail('bad', 'طلب غلط');
-    let seq = +this.kv('seq'); const done = [], news = [], who = m.name || m.phone;
+    let seq = +this.kv('seq'); const done = [], news = [], ownerNews = [], who = m.name || m.phone;
     for (const op of ops) {
       const c = clean(op.c, 40), i = clean(op.i, 120);
       if (!/^[\w-]+$/.test(c) || !i) { done.push({k: op.k, ok: false}); continue; }
-      if (c === 'settings' && m.role !== 'owner') { done.push({k: op.k, ok: false, err: 'owner'}); continue; }   // like the rule in Claude: settings are the owner's
+      if (c === 'settings' && m.role !== 'owner') { done.push({k: op.k, ok: false, err: 'owner'}); continue; }
+      if (!this.knownCol(c)) { done.push({k: op.k, ok: false, err: 'cols'}); continue; }   // too many different lists: someone is filling the shop with junk   // like the rule in Claude: settings are the owner's
       const row = this.sql.exec('SELECT d, del FROM docs WHERE c = ? AND i = ?', c, i).toArray()[0];
       const cur = row && !row.del ? JSON.parse(row.d) : null;
       const why = m.role === 'owner' ? '' : this.refuse(m, c, cur, op);
       if (why) { done.push({k: op.k, ok: false, err: 'perm', msg: why}); continue; }
+      const handStock = m.role !== 'owner' && c === 'products' && cur && op.t !== 'del' ? this.handStock(m, i, cur, op) : null;
       if (m.role !== 'owner' && !permsOf(m).money && op.d && typeof op.d === 'object') {
         // the worker's copy has no buying prices: put them back from the shop's own records, so the owner's profits stay right
         if (c === 'products' && cur) COST_KEYS.forEach(k => { if (k in cur) { op.d[k] = cur[k]; if (op.b) op.b[k] = cur[k]; } });
@@ -317,11 +343,43 @@ export class Shop extends DurableObject {
       seq++;
       this.sql.exec('INSERT INTO docs (c, i, d, s, del, by) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(c, i) DO UPDATE SET d = excluded.d, s = excluded.s, del = excluded.del, by = excluded.by', c, i, txt, seq, out ? 0 : 1, m.phone);
       done.push({k: op.k, ok: true, s: seq, d: this.view(m, c, out)});
+      if (handStock && out && typeof out.stock === 'number' && out.stock !== handStock.from) {
+        // a worker changed a stock number by hand (not by a sale or a purchase): it goes in the shop's record under his name, and the owner gets told
+        const name = out.name || cur.name || 'منتج', summary = `⚠️ ${who} غيّر مخزون «${name}» بيده: كان ${handStock.from} وصار ${out.stock}`;
+        seq++;
+        this.sql.exec('INSERT INTO docs (c, i, d, s, del, by) VALUES (?, ?, ?, ?, 0, ?)', 'logs', 'srv' + rand(8), JSON.stringify({t: Date.now(), date: new Date(Date.now() + 3 * 3600000).toISOString().slice(0, 10), uid: m.phone, byName: m.name || '', entity: 'products', action: 'stock', summary, amount: null, ref: i}), seq, m.phone);
+        ownerNews.push({title: '📦 تعديل مخزون باليد', body: summary, kind: 'stock'});
+      }
     }
     this.kv('seq', seq);
     this.broadcast({t: 'c', seq, by: m.phone});   // other open devices fetch the change at once
     if (news.length) this.ctx.waitUntil(this.announce(news, m.phone));
+    if (ownerNews.length) this.ctx.waitUntil(this.announce(ownerNews, m.phone, true));
     return {done, seq};
+  }
+  // did this worker change the stock by hand? A sale moves it with a mark that points to its invoice (and the exact amount);
+  // a purchase moves it with a purchase mark. Anything else is by hand. Returns {from} when it is by hand, else null.
+  handStock(m, pid, cur, op) {
+    const d = op.d || {}, b = op.b && typeof op.b === 'object' ? op.b : cur;
+    if (typeof d.stock !== 'number' || typeof b.stock !== 'number' || d.stock === b.stock) return null;
+    const had = new Set(b.stkMarks || []), fresh = (Array.isArray(d.stkMarks) ? d.stkMarks : []).filter(k => !had.has(k));
+    for (const key of fresh) {
+      const at = String(key).indexOf(':'); if (at < 1) continue;
+      const row = this.sql.exec("SELECT d FROM docs WHERE c = 'invoices' AND i = ? AND del = 0", String(key).slice(0, at)).toArray()[0];
+      const sp = row ? JSON.parse(row.d).stockPending : null;
+      if (!sp || sp.k !== String(key).slice(at + 1)) continue;
+      const dd = ((sp.need || {})[pid] || 0) - ((sp.had || {})[pid] || 0);
+      if (d.stock === Math.max(0, b.stock - dd)) return null;
+    }
+    const pHad = new Set(b.purMarks || []);
+    if (permsOf(m).purchases && (Array.isArray(d.purMarks) ? d.purMarks : []).some(k => !pHad.has(k))) return null;
+    return {from: typeof cur.stock === 'number' ? cur.stock : b.stock};
+  }
+  knownCol(c) {
+    if (!this._cols) this._cols = new Set(this.sql.exec('SELECT DISTINCT c FROM docs').toArray().map(r => r.c));
+    if (this._cols.has(c)) return true;
+    if (this._cols.size >= 80) return false;
+    this._cols.add(c); return true;
   }
   // what a worker is NOT allowed to change (checked here on the server, not only hidden on the screen)
   refuse(m, c, cur, op) {
@@ -339,10 +397,29 @@ export class Shop extends DurableObject {
       if (op.t === 'del') return 'حذف الفواتير لصاحب المحل';
       if (!cur && !P.sell) return 'البيع مو من صلاحياتك';
       if (cur) {
+        const why = this.oldInvoice(P, P.money ? cur : stripCost('invoices', cur), op);
+        if (why) return why;
         if (!P.returns && ((d.void && !cur.void) || (d.returns || []).length > (cur.returns || []).length || (d.returns || []).some(r => r.void && !(cur.returns || []).find(x => x.id === r.id && x.void)))) return 'الإرجاع والإلغاء لصاحب المحل';
         if (!P.pay && (d.payments || []).length > (cur.payments || []).length) return 'تسجيل الدفعات مو من صلاحياتك';
       }
     }
+    return '';
+  }
+  // an invoice that already exists: a worker may only ADD to it (a payment, a return, a cancel — each by its permission).
+  // Prices, items, the total, the customer and payments already written are the owner's.
+  oldInvoice(P, cur, op) {
+    const d = op.d || {}, b = op.b && typeof op.b === 'object' ? op.b : cur, eq = (x, y) => JSON.stringify(x ?? null) === JSON.stringify(y ?? null);
+    const FREE = ['payments', 'returns', 'void', 'voidReason', 'voidAt', 'voidT', 'refund', 'refundWallet', 'stockPending', 'stockDone', 'lastReminder', 'reminders', 'no', 'updatedAt', 'by', 'byName'];
+    for (const k of new Set([...Object.keys(d), ...Object.keys(b)])) if (!FREE.includes(k) && !COST_KEYS.includes(k) && k !== 'profit' && !eq(d[k], b[k])) return 'تعديل الفواتير القديمة (الأسعار والمنتجات والمبلغ) لصاحب المحل';
+    if (b.void && !d.void) return 'رجوع فاتورة ملغاة لصاحب المحل';
+    if (!P.returns && ['void', 'voidReason', 'voidAt', 'voidT', 'refund', 'refundWallet', 'stockPending'].some(k => !eq(d[k], b[k]))) return 'الإرجاع والإلغاء لصاحب المحل';   // only returns and cancels move these
+    const byId = L => new Map((Array.isArray(L) ? L : []).filter(x => x && x.id != null).map(x => [x.id, x]));
+    const dp = byId(d.payments);
+    for (const [id, x] of byId(b.payments)) { const y = dp.get(id); if (!y) return 'حذف الدفعات لصاحب المحل'; if (!eq(x, y)) return 'تعديل أو عكس الدفعات لصاحب المحل'; }
+    const bp = byId(b.payments);
+    for (const [id, y] of dp) if (!bp.has(id) && !(typeof y.amount === 'number' && y.amount > 0 && y.amount <= 1e10)) return 'مبلغ الدفعة غلط';
+    const dr = byId(d.returns);
+    for (const [id, x] of byId(b.returns)) { const y = dr.get(id); if (!y) return 'حذف الإرجاع لصاحب المحل'; const {void: v1, voidAt: a1, voidT: t1, ...rx} = x, {void: v2, voidAt: a2, voidT: t2, ...ry} = y; if (!eq(rx, ry) || (x.void && !y.void)) return 'تعديل الإرجاع لصاحب المحل'; }
     return '';
   }
   fillCost(d, cur) {
@@ -377,16 +454,24 @@ export class Shop extends DurableObject {
   }
   async webSocketClose(ws, code) { try { ws.close(code === 1006 ? 1000 : code, 'bye'); } catch (e) {} }
   async webSocketError(ws) { try { ws.close(1011, 'error'); } catch (e) {} }
-  broadcast(o) {
-    const txt = JSON.stringify(o);
-    for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.phone) { try { ws.send(txt); } catch (e) {} } }
+  // only people who are still in the shop (and active) hear it; a removed or stopped person's open line is closed
+  broadcast(o, onlyOwner) {
+    const txt = JSON.stringify(o), live = new Map(this.sql.exec('SELECT phone, role FROM members WHERE active = 1').toArray().map(r => [r.phone, r.role]));
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment(); if (!a || !a.phone) continue;
+      if (!live.has(a.phone)) { this.kick(ws); continue; }
+      if (onlyOwner && live.get(a.phone) !== 'owner') continue;
+      try { ws.send(txt); } catch (e) {}
+    }
   }
-  async announce(news, by) {
+  kick(ws) { try { ws.send(JSON.stringify({t: 'bye'})); ws.close(4001, 'gone'); } catch (e) {} }
+  kickPhone(phone) { for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.phone === phone) this.kick(ws); } }
+  async announce(news, by, onlyOwner) {
     const ids = [];
     for (const n of news) { this.sql.exec('INSERT INTO events (at, by, title, body, kind) VALUES (?, ?, ?, ?, ?)', Date.now(), by, n.title, n.body, n.kind); ids.push(this.sql.exec('SELECT last_insert_rowid() AS id').one().id); }
     this.sql.exec('DELETE FROM events WHERE id <= (SELECT MAX(id) - 500 FROM events)');
-    news.forEach((n, k) => this.broadcast({t: 'ev', id: ids[k], by, title: n.title, body: n.body, kind: n.kind}));
-    const subs = this.sql.exec('SELECT * FROM subs WHERE phone != ?', by).toArray();
+    news.forEach((n, k) => this.broadcast({t: 'ev', id: ids[k], by, title: n.title, body: n.body, kind: n.kind}, onlyOwner));
+    const subs = this.sql.exec(`SELECT s.* FROM subs s JOIN members m ON m.phone = s.phone WHERE m.active = 1 AND s.phone != ?${onlyOwner ? " AND m.role = 'owner'" : ''}`, by).toArray();
     if (!subs.length) return;
     let vapid; try { vapid = await this.env.DIR.get(this.env.DIR.idFromName('dir')).vapid(); } catch (e) { return; }
     const one = news.length === 1 ? news[0] : {title: `${news.length} حركات جديدة`, body: news.map(n => n.title).join(' · ')};
@@ -406,10 +491,14 @@ export class Shop extends DurableObject {
   async unsubscribe(token, endpoint) { await this.need(token); this.sql.exec('DELETE FROM subs WHERE endpoint = ?', String(endpoint || '')); return true; }
   async events(token, since) {
     const m = await this.need(token);
-    return this.sql.exec('SELECT id, at, by, title, body, kind FROM events WHERE id > ? ORDER BY id DESC LIMIT 50', Math.max(0, +since || 0)).toArray().reverse().map(e => ({...e, mine: e.by === m.phone}));
+    return this.sql.exec('SELECT id, at, by, title, body, kind FROM events WHERE id > ? ORDER BY id DESC LIMIT 50', Math.max(0, +since || 0)).toArray().reverse()
+      .filter(e => m.role === 'owner' || e.kind !== 'stock').map(e => ({...e, mine: e.by === m.phone}));   // stock warnings are for the owner
   }
   async testNotify(token) {
     const m = await this.need(token);
+    const last = +this.kv('test:' + m.phone) || 0;
+    if (Date.now() - last < 60000) throw new Fail('wait', 'جرّبت هسه. انتظر دقيقة وجرّب مرة ثانية', 429);
+    this.kv('test:' + m.phone, Date.now());
     await this.announce([{title: '🔔 تجربة الإشعارات', body: `${m.name || m.phone}: الإشعارات شغّالة على أجهزة المحل ✓`, kind: 'test'}], '-');
     return true;
   }
@@ -430,8 +519,8 @@ export class Shop extends DurableObject {
   async setMember(token, phone, patch) {
     const me = await this.need(token, 'owner');
     phone = normPhone(phone); const m = this.member(phone); if (!m) throw new Fail('nomember', 'ما لگيت هذا الشخص', 404);
-    if (patch.password != null) { if (!okPass(patch.password)) throw new Fail('weak', 'كلمة السر لازم 6 حروف أو أكثر'); const salt = rand(16); this.sql.exec('UPDATE members SET hash = ?, salt = ?, ver = ver + 1, fails = 0, lockUntil = 0 WHERE phone = ?', await pbkdf2(patch.password, salt), salt, phone); }
-    if (patch.active != null) { if (m.role === 'owner') throw new Fail('owner', 'ما تگدر توقف صاحب المحل'); this.sql.exec('UPDATE members SET active = ?, ver = ver + 1 WHERE phone = ?', patch.active ? 1 : 0, phone); }
+    if (patch.password != null) { if (!okPass(patch.password)) throw new Fail('weak', 'كلمة السر لازم 6 حروف أو أكثر'); const salt = rand(16); this.sql.exec('UPDATE members SET hash = ?, salt = ?, ver = ver + 1, fails = 0, lockUntil = 0 WHERE phone = ?', await pbkdf2(patch.password, salt), salt, phone); this.sql.exec("DELETE FROM tries WHERE k = ? OR k LIKE ?", 'all:' + phone, 'ip:' + phone + '|%'); }
+    if (patch.active != null) { if (m.role === 'owner') throw new Fail('owner', 'ما تگدر توقف صاحب المحل'); this.sql.exec('UPDATE members SET active = ?, ver = ver + 1 WHERE phone = ?', patch.active ? 1 : 0, phone); if (!patch.active) this.kickPhone(phone); }
     if (patch.name != null) { const n = clean(patch.name); if (n.length >= 2) this.sql.exec('UPDATE members SET name = ? WHERE phone = ?', n, phone); }
     if (patch.perms && typeof patch.perms === 'object' && m.role !== 'owner') {
       const cur = permsOf(m), next = Object.fromEntries(Object.keys(PERMS).map(k => [k, typeof patch.perms[k] === 'boolean' ? patch.perms[k] : cur[k]]));
@@ -449,6 +538,8 @@ export class Shop extends DurableObject {
     phone = normPhone(phone); const m = this.member(phone); if (!m) return true;
     if (m.role === 'owner') throw new Fail('owner', 'ما تگدر تحذف صاحب المحل');
     this.sql.exec('DELETE FROM members WHERE phone = ?', phone);
+    this.sql.exec('DELETE FROM subs WHERE phone = ?', phone);   // his phone stops getting the shop's notifications
+    this.kickPhone(phone);
     await this.env.DIR.get(this.env.DIR.idFromName('dir')).releasePhone(phone, this.kv('id'));
     return true;
   }
@@ -458,6 +549,7 @@ export class Shop extends DurableObject {
     phone = normPhone(phone); const m = this.member(phone); if (!m) throw new Fail('nomember', 'ما لگيت هذا الشخص', 404);
     if (!okPass(password)) throw new Fail('weak', 'كلمة السر لازم 6 حروف أو أكثر');
     const salt = rand(16); this.sql.exec('UPDATE members SET hash = ?, salt = ?, ver = ver + 1, fails = 0, lockUntil = 0, active = 1 WHERE phone = ?', await pbkdf2(password, salt), salt, phone);
+    this.sql.exec("DELETE FROM tries WHERE k = ? OR k LIKE ?", 'all:' + phone, 'ip:' + phone + '|%');
     return true;
   }
   async stats() {
@@ -482,7 +574,7 @@ async function api(req, env, url) {
     const phone = normPhone(body.phone);
     if (!okPhone(phone)) throw new Fail('phone', 'رقم الهاتف لازم 11 رقم ويبدأ بـ 07');
     const r = await dir.lookup(phone); if (!r) { await pbkdf2('x', 'y'); throw new Fail('wrong', 'الرقم أو كلمة السر غلط', 401); }
-    return shopOf(env, r.shop).login(phone, body.password);
+    return shopOf(env, r.shop).login(phone, body.password, req.headers.get('cf-connecting-ip'));
   }
   if (p === '/me') return shopFromToken(env, t).me(t);
   if (p === '/salary') return shopFromToken(env, t).mySalary(t, q('phone'));
@@ -502,7 +594,7 @@ async function api(req, env, url) {
   // the app's owner
   if (p === '/admin/state') return dir.adminState();
   if (p === '/admin/setup' && req.method === 'POST') return dir.adminSetup(body.password);
-  if (p === '/admin/login' && req.method === 'POST') return dir.adminLogin(body.password);
+  if (p === '/admin/login' && req.method === 'POST') return dir.adminLogin(body.password, req.headers.get('cf-connecting-ip'));
   if (p.startsWith('/admin/')) {
     if (!(await dir.adminCheck(t))) throw new Fail('auth', 'سجّل دخول المدير مرة ثانية', 401);
     if (p === '/admin/shops') {

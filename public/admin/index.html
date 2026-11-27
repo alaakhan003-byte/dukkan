@@ -58,7 +58,7 @@ input:focus{border-color:#818CF8;background:#fff}input.l{direction:ltr;text-alig
     if (!r) throw new Error('ما أكو اتصال بالإنترنت');
     const j = await r.json().catch(() => ({}));
     if (r.status === 401 && path.startsWith('/admin/') && !/login|setup/.test(path)) { setTok(''); gate(); throw new Error(j.msg || 'سجّل دخول مرة ثانية'); }
-    if (!r.ok) throw new Error(j.msg || 'صار خطأ');
+    if (!r.ok) throw new Error(j.msg || (r.status >= 500 ? 'السيرفر مشغول هسه. جرّب مرة ثانية بعد ثواني' : 'صار خطأ'));
     return j;
   }
   function setTok(t) { tok = t; try { if (t) { localStorage.setItem('dk:adm', t); } else { localStorage.removeItem('dk:adm'); sessionStorage.removeItem('dk:adm'); } } catch (e) {} }
