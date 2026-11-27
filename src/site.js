@@ -158,6 +158,9 @@
   function box(c) {
     var exe = c && c.exe && !/OWNER\/REPO/.test(c.exe) ? c.exe : '';
     var rows = [];
+    var acc = window.__dkAccount ? window.__dkAccount() : '';
+    if (acc) rows.push(acc);
+    else rows.push('<div class="dk-note">تستخدم التطبيق بدون حساب: البيانات على هذا الجهاز بس.</div><button type="button" class="btn pri dk-btn" id="dkLogin">سجّل دخول بحساب محلك (حفظ بالسحابة)</button>');
     rows.push('<div class="dk-row"><span>نسخة التطبيق</span><b class="num">' + esc(window.APP_VERSION) + '</b></div>');
     rows.push('<div class="dk-note">يتحدث لحاله كل ما تفتحه وأنت متصل بالإنترنت.</div>');
     if (desktop) { rows.push('<div class="dk-note">أنت تستخدم نسخة الحاسبة (ويندوز). التطبيق كله داخل البرنامج ويشتغل بدون إنترنت، وإذا نزلت نسخة جديدة يطلعلك زر «حدّث هسه».</div>'); if (window.dukkanDesktop) rows.push('<button type="button" class="btn ghost dk-btn" id="dkChk">تحقق من التحديث</button>'); }
@@ -167,7 +170,7 @@
       rows.push(exe ? '<a class="btn pri dk-btn" href="' + esc(exe) + '" target="_blank" rel="noopener">نزّل نسخة الحاسبة (ويندوز EXE)</a>'
         : '<div class="dk-note">نسخة الحاسبة (EXE) تتوفر بعد ربط GitHub.</div>');
     }
-    rows.push('<div class="dk-note dk-warn">بياناتك محفوظة على هذا الجهاز بس. سوّي نسخة احتياطية بشكل دوري.</div>');
+    if (!acc) rows.push('<div class="dk-note dk-warn">بياناتك محفوظة على هذا الجهاز بس. سوّي نسخة احتياطية بشكل دوري، أو سجّل دخول بحساب.</div>');
     return '<div class="dk-box" id="dkBox"><div class="dk-h">التطبيق</div>' + rows.join('') + '</div>';
   }
   function inject() {
@@ -179,6 +182,8 @@
       form.insertAdjacentHTML('afterbegin', box(c));
       var b = document.getElementById('dkInstall');
       if (b) b.onclick = function () { installEv.prompt(); installEv.userChoice.finally(function () { installEv = null; b.remove(); }); };
+      if (window.__dkAccountBind) window.__dkAccountBind();
+      var lg = document.getElementById('dkLogin'); if (lg) lg.onclick = function () { try { localStorage.removeItem('dk:mode'); } catch (e) {} location.reload(); };
       var ck = document.getElementById('dkChk'); if (ck) ck.onclick = function () { ck.textContent = 'جاري الفحص...'; window.dukkanDesktop.check(); };
     });
   }

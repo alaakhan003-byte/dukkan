@@ -25,14 +25,17 @@ head = f'''<link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <script src="site.js?v={version}"></script>
+<script src="cloud.js?v={version}"></script>
 '''
 marker = '<meta charset="UTF-8">\n'
 assert app.count(marker) == 1, 'charset marker missing'
 app = app.replace(marker, marker + head)
 app = re.sub(r'<meta name="theme-color" content="[^"]*">', '<meta name="theme-color" content="#312E81">', app, count=1)
 (pub / 'index.html').write_text(app, encoding='utf-8')
-for n in ['site.js', 'sw.js']:
-    (pub / n).write_text((R / 'src' / n).read_text(encoding='utf-8').replace('__VERSION__', version), encoding='utf-8')
+for n in ['site.js', 'sw.js', 'cloud.js']:
+    (pub / n).write_text((R / 'src' / n).read_text(encoding='utf-8').replace('__VERSION__', version).replace('__SITE__', cfg['url']), encoding='utf-8')
+(R / 'public' / 'admin').mkdir(exist_ok=True)
+(R / 'public' / 'admin' / 'index.html').write_text((R / 'src' / 'admin.html').read_text(encoding='utf-8'), encoding='utf-8')
 exe = f"https://github.com/{cfg['repo']}/releases/latest/download/Dukkan-Setup.exe"
 import hashlib
 # the list of app files with their fingerprints: the Windows program downloads only the ones that changed

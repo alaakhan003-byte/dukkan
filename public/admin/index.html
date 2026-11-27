@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>دكّان — لوحة المدير</title>
+<link rel="icon" type="image/png" sizes="32x32" href="../app/icons/favicon-32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* VOICE: the owner's back office — calm, exact, nothing extra.
+   IDEA: a ledger of shops, one row each, with the counter (new shop) at the top.
+   PICTURE: the list itself; a deep indigo band holds the title and the totals.
+   COLOUR and TYPE: indigo band, white page, one pink accent; IBM Plex Sans Arabic like the app.
+   LAYOUT: band with totals → new-shop form → shops list → admin password. */
+:root{color-scheme:light;--ind:#312E81;--ind2:#4338CA;--ink:#0F172A;--mut:#64748B;--line:#E3E6F0;--bg:#F5F6FB}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 "IBM Plex Sans Arabic",system-ui,sans-serif}
+.band{background:radial-gradient(60% 80% at 90% 0%,rgba(129,140,248,.5),transparent 60%),linear-gradient(165deg,#3730A3,#1E1B4B);color:#fff;padding:calc(22px + env(safe-area-inset-top)) max(5vw,16px) 26px}
+.band .in,.wrap{max-width:900px;margin:0 auto}
+.top{display:flex;align-items:center;gap:12px}.top img{width:44px;height:44px;border-radius:13px}.top h1{margin:0;font-size:24px}.top span{color:#C7CCFF;font-size:14px}
+.top button{margin-inline-start:auto}
+.k{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:18px}
+.k div{background:rgba(255,255,255,.1);border-radius:14px;padding:10px 12px}.k small{color:#C7CCFF;font-size:13px}.k b{display:block;font-size:24px}
+.wrap{padding:20px max(4vw,14px) 40px}
+.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:18px;margin-bottom:16px}
+.card h2{margin:0 0 4px;font-size:19px}.sub{color:var(--mut);font-size:14px;margin:0 0 14px}
+.g{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}@media(max-width:600px){.g{grid-template-columns:1fr}}
+label{display:block;font-size:14px;font-weight:600;margin-bottom:5px;color:#334155}
+input{width:100%;min-height:48px;border:1.5px solid var(--line);border-radius:13px;padding:0 12px;font:inherit;font-size:16px;background:#F8FAFC;outline:0}
+input:focus{border-color:#818CF8;background:#fff}input.l{direction:ltr;text-align:right}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:0 18px;border-radius:13px;border:0;font:inherit;font-weight:700;cursor:pointer}
+.pri{background:var(--ind2);color:#fff}.ghost{background:#EEF2FF;color:#3730A3}.red{background:#FFF1F2;color:#BE123C}.lite{background:rgba(255,255,255,.14);color:#fff}
+.btn:disabled{opacity:.6}.btn:focus-visible,input:focus-visible{outline:3px solid #F9A8D4;outline-offset:2px}
+.msg{min-height:22px;font-size:14px;font-weight:600;margin-top:10px}.msg.bad{color:#BE123C}.msg.ok{color:#047857}
+.shop{border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:10px}
+.shop .h{display:flex;flex-wrap:wrap;align-items:center;gap:8px}.shop .h b{font-size:17px}
+.tag{font-size:12px;font-weight:700;border-radius:999px;padding:2px 10px;background:#ECFDF5;color:#047857}.tag.off{background:#FFF1F2;color:#BE123C}
+.meta{color:var(--mut);font-size:14px;margin:6px 0 10px}.meta .num{direction:ltr;unicode-bidi:isolate}
+.acts{display:flex;flex-wrap:wrap;gap:8px}.acts .btn{min-height:40px;font-size:14px;padding:0 12px}
+.reset{display:flex;gap:8px;margin-top:10px}.reset input{min-height:42px}
+.center{max-width:420px;margin:8vh auto;padding:0 16px}
+.empty{color:var(--mut);text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+{
+  const API = '/api', root = document.getElementById('root');
+  let tok = ''; try { tok = sessionStorage.getItem('dk:adm') || localStorage.getItem('dk:adm') || ''; } catch (e) {}
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+  const toEn = s => String(s || '').replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+  const fmt = t => t ? new Date(t).toLocaleString('ar-IQ', {dateStyle: 'medium', timeStyle: 'short'}) : 'ما دخل بعد';
+  async function call(path, body) {
+    const r = await fetch(API + path, {method: body ? 'POST' : 'GET', cache: 'no-store', headers: {'content-type': 'application/json', ...(tok ? {authorization: 'Bearer ' + tok} : {})}, body: body ? JSON.stringify(body) : undefined}).catch(() => null);
+    if (!r) throw new Error('ما أكو اتصال بالإنترنت');
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 401 && path.startsWith('/admin/') && !/login|setup/.test(path)) { setTok(''); gate(); throw new Error(j.msg || 'سجّل دخول مرة ثانية'); }
+    if (!r.ok) throw new Error(j.msg || 'صار خطأ');
+    return j;
+  }
+  function setTok(t) { tok = t; try { if (t) { localStorage.setItem('dk:adm', t); } else { localStorage.removeItem('dk:adm'); sessionStorage.removeItem('dk:adm'); } } catch (e) {} }
+  const head = `<div class="top"><img src="../app/icons/icon-192.png" alt=""><div><h1>لوحة المدير</h1><span>دكّان — إلك بس</span></div></div>`;
+
+  async function gate() {
+    let st = {setup: true}; try { st = await call('/admin/state'); } catch (e) {}
+    const first = !st.setup;
+    root.innerHTML = `<div class="band"><div class="in">${head}</div></div><div class="center"><div class="card">
+      <h2>${first ? 'أول مرة: سوّي كلمة سر للمدير' : 'دخول المدير'}</h2>
+      <p class="sub">${first ? 'هاي كلمة السر اللي تفتح بيها هاي الصفحة. احفظها زين ولا تنطيها لأحد. تنسوّى مرة وحدة بس.' : 'اكتب كلمة سر المدير.'}</p>
+      <form id="f"><label for="pw">كلمة السر</label><input id="pw" type="password" autocomplete="${first ? 'new-password' : 'current-password'}">
+      ${first ? '<label for="pw2" style="margin-top:10px">نفس كلمة السر مرة ثانية</label><input id="pw2" type="password" autocomplete="new-password">' : ''}
+      <button class="btn pri" style="width:100%;margin-top:14px">${first ? 'احفظ وادخل' : 'دخول'}</button><div class="msg bad" id="m"></div></form></div></div>`;
+    const m = document.getElementById('m');
+    document.getElementById('pw').focus();
+    document.getElementById('f').onsubmit = async e => {
+      e.preventDefault();
+      const pw = document.getElementById('pw').value;
+      if (first && pw !== document.getElementById('pw2').value) { m.textContent = 'كلمتين السر مو نفس الشي'; return; }
+      if (first && pw.length < 6) { m.textContent = 'كلمة السر لازم 6 حروف أو أكثر'; return; }
+      try { const r = await call(first ? '/admin/setup' : '/admin/login', {password: pw}); setTok(r.token); main(); } catch (err) { m.textContent = err.message; }
+    };
+  }
+
+  async function main() {
+    root.innerHTML = `<div class="band"><div class="in"><div class="top"><img src="../app/icons/icon-192.png" alt=""><div><h1>لوحة المدير</h1><span>دكّان — إلك بس</span></div><button class="btn lite" id="out">خروج</button></div><div class="k" id="k"></div></div></div>
+      <div class="wrap">
+        <div class="card"><h2>محل جديد</h2><p class="sub">تسوي حساب للمحل وتسلم صاحبه رقمه وكلمة السر. هو يدخل بيهن من التطبيق، ويضيف عماله بنفسه.</p>
+          <form id="add" class="g" autocomplete="off">
+            <div><label for="sn">اسم المحل</label><input id="sn" placeholder="مثال: محلات النور للموبايل"></div>
+            <div><label for="on">اسم صاحب المحل</label><input id="on" placeholder="مثال: علي حسين"></div>
+            <div><label for="op">رقم تلفون صاحب المحل</label><input id="op" class="l" inputmode="tel" placeholder="07xxxxxxxxx"></div>
+            <div><label for="ow">كلمة سر صاحب المحل</label><input id="ow" placeholder="6 حروف أو أكثر"></div>
+            <div style="grid-column:1/-1"><button class="btn pri">سوّي حساب المحل</button><div class="msg" id="am"></div></div>
+          </form></div>
+        <div class="card"><h2>المحلات</h2><div id="list"><div class="empty">جاري التحميل...</div></div></div>
+        <div class="card"><h2>كلمة سر المدير</h2><p class="sub">إذا غيّرتها، أي جهاز ثاني فاتح هاي الصفحة يطلع منها.</p>
+          <form id="cp" class="g"><div><input id="np" type="password" placeholder="كلمة السر الجديدة" autocomplete="new-password"></div><div><button class="btn ghost">غيّر كلمة السر</button></div></form><div class="msg" id="cm"></div></div>
+      </div>`;
+    document.getElementById('out').onclick = () => { setTok(''); gate(); };
+    document.getElementById('add').onsubmit = async e => {
+      e.preventDefault();
+      const am = document.getElementById('am'), b = e.target.querySelector('button'); b.disabled = true; am.className = 'msg'; am.textContent = '';
+      const body = {name: sn.value, ownerName: on.value, phone: toEn(op.value), password: ow.value};
+      try {
+        const r = await call('/admin/shops/add', body);
+        am.className = 'msg ok'; am.textContent = `انسوّى ✓ سلّم صاحب المحل: الرقم ${r.owner} وكلمة السر اللي كتبتها. يدخل من ${location.origin}/app/`;
+        e.target.reset(); load();
+      } catch (err) { am.className = 'msg bad'; am.textContent = err.message; }
+      b.disabled = false;
+    };
+    document.getElementById('cp').onsubmit = async e => {
+      e.preventDefault(); const cm = document.getElementById('cm');
+      try { const r = await call('/admin/password', {password: np.value}); setTok(r.token); cm.className = 'msg ok'; cm.textContent = 'تغيّرت ✓'; np.value = ''; } catch (err) { cm.className = 'msg bad'; cm.textContent = err.message; }
+    };
+    load();
+  }
+
+  async function load() {
+    const box = document.getElementById('list');
+    let L; try { L = await call('/admin/shops'); } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    const active = L.filter(s => !s.disabled).length, people = L.reduce((n, s) => n + (s.people || 0), 0);
+    document.getElementById('k').innerHTML = `<div><small>المحلات</small><b>${L.length}</b></div><div><small>شغّالة</small><b>${active}</b></div><div><small>الأشخاص</small><b>${people}</b></div>`;
+    if (!L.length) { box.innerHTML = '<div class="empty">ما عندك محلات بعد. سوّي أول محل من فوق.</div>'; return; }
+    box.innerHTML = L.map(s => {
+      const c = s.stats?.counts || {}, ppl = s.stats?.people || [];
+      return `<div class="shop" data-id="${esc(s.id)}"><div class="h"><b>${esc(s.name)}</b><span class="tag ${s.disabled ? 'off' : ''}">${s.disabled ? 'موقوف' : 'شغّال'}</span></div>
+        <div class="meta">صاحبه: ${esc(s.ownerName || '')} · <span class="num">${esc(s.owner)}</span> · الأشخاص: ${s.people || 0}<br>
+        ${c.products || 0} منتج · ${c.invoices || 0} فاتورة · ${c.customers || 0} عميل · آخر دخول: ${esc(fmt(s.stats?.lastSeen))}<br>
+        ${ppl.filter(p => p.role !== 'owner').map(p => `${esc(p.name)} (<span class="num">${esc(p.phone)}</span>)${p.active ? '' : ' موقوف'}`).join(' · ') || 'ما عنده عمال'}</div>
+        <div class="acts"><button class="btn ${s.disabled ? 'ghost' : 'red'}" data-dis="${s.disabled ? 0 : 1}">${s.disabled ? 'رجّع تشغيل المحل' : 'أوقف المحل'}</button>
+        <button class="btn ghost" data-rs="1">كلمة سر جديدة لصاحبه</button></div></div>`;
+    }).join('');
+    box.querySelectorAll('[data-dis]').forEach(b => b.onclick = async () => {
+      const id = b.closest('.shop').dataset.id, off = b.dataset.dis === '1';
+      if (off && !b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'متأكد؟ اضغط مرة ثانية'; return; }
+      try { await call('/admin/shops/set', {id, disabled: off}); load(); } catch (e) { alertBox(b, e.message); }
+    });
+    box.querySelectorAll('[data-rs]').forEach(b => b.onclick = () => {
+      const card = b.closest('.shop'); if (card.querySelector('.reset')) return;
+      const s = L.find(x => x.id === card.dataset.id);
+      card.insertAdjacentHTML('beforeend', `<div class="reset"><input placeholder="كلمة السر الجديدة لـ ${esc(s.owner)}"><button class="btn pri">حفظ</button></div><div class="msg"></div>`);
+      const i = card.querySelector('.reset input'), m = card.querySelector('.reset + .msg'); i.focus();
+      card.querySelector('.reset button').onclick = async () => {
+        try { await call('/admin/shops/reset', {id: s.id, phone: s.owner, password: i.value}); m.className = 'msg ok'; m.textContent = 'تغيّرت ✓ (الأجهزة المفتوحة على حسابه راح تطلب منه يدخل من جديد)'; i.value = ''; }
+        catch (e) { m.className = 'msg bad'; m.textContent = e.message; }
+      };
+    });
+  }
+  function alertBox(el, t) { const m = document.createElement('div'); m.className = 'msg bad'; m.textContent = t; el.closest('.shop').appendChild(m); }
+  if (tok) main(); else gate();
+}
+</script>
+</body>
+</html>

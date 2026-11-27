@@ -1,9 +1,22 @@
 {
-  // دكّان على Cloudflare Workers: يرفع مجلد public كما هو (الموقع + التطبيق)
+  // دكّان على Cloudflare: الموقع (مجلد public) + السيرفر (worker/index.js) لحسابات المحلات والمزامنة.
+  // كل محل إله قاعدة بيانات خاصة بيه (Durable Object)، ما أحد يشوف بيانات الثاني.
   "name": "dukkan",
+  "main": "worker/index.js",
   "compatibility_date": "2025-09-01",
   "assets": {
     "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"],
     "not_found_handling": "404-page"
-  }
+  },
+  "durable_objects": {
+    "bindings": [
+      {"name": "DIR", "class_name": "Directory"},
+      {"name": "SHOP", "class_name": "Shop"}
+    ]
+  },
+  "migrations": [
+    {"tag": "v1", "new_sqlite_classes": ["Directory", "Shop"]}
+  ]
 }

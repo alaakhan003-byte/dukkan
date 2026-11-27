@@ -1,7 +1,7 @@
 /* دكّان — works offline, and always takes the newest copy when there is internet */
-const VERSION = '2026.11.27-2051';
+const VERSION = '2026.11.27-2109';
 const CACHE = 'dukkan-' + VERSION;
-const CORE = ['./', './index.html', './site.js', './manifest.webmanifest', './vendor/zxing.min.js', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
+const CORE = ['./', './index.html', './site.js', './cloud.js', './manifest.webmanifest', './vendor/zxing.min.js', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(CORE.map(u => new Request(u, {cache: 'reload'})))).then(() => self.skipWaiting()));
