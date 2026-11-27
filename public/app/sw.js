@@ -1,5 +1,5 @@
 /* دكّان — works offline, and always takes the newest copy when there is internet */
-const VERSION = '2026.11.27-1822';
+const VERSION = '2026.11.27-1843';
 const CACHE = 'dukkan-' + VERSION;
 const CORE = ['./', './index.html', './site.js', './manifest.webmanifest', './vendor/zxing.min.js', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png'];
 

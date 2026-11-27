@@ -1402,6 +1402,8 @@ input.has-dmy::-webkit-datetime-edit{color:transparent}
 .cam-pick button span{font-size:13px;color:#4338CA;font-weight:600}
 .cam-pick button:hover{border-color:#818CF8;background:#EEF2FF}
 @media(prefers-reduced-motion:reduce){.cam-frame i,.cam-ph.busy svg{animation:none}}
+/* v25 */
+.pk-more{text-align:center;color:var(--muted);font-size:13px;padding:14px 8px 18px}
 </style>
 </head>
 <body>
@@ -3940,7 +3942,7 @@ renderInvoice = function () {
     return;
   }
   const extra = document.createElement('div'); extra.className = 'dact';
-  extra.innerHTML = `${x.customerPhone ? `<button class="btn" data-irc="1" style="background:#DCFCE7;color:#15803D">${I(IC.receipt)}إرسال الفاتورة للزبون</button>` : ''}`;
+  extra.innerHTML = `${x.customerPhone ? `<button class="btn" data-irc="1" style="background:#DCFCE7;color:#15803D">${I(IC.receipt)}إرسال للزبون</button>` : ''}`;
   if (extra.innerHTML.trim()) first.appendChild(extra);
   if (x.editedAt) { const n = document.createElement('div'); n.className = 'base-note'; n.style.marginTop = '8px'; n.innerHTML = `آخر تعديل: <span class="num">${fmtD(toISO(new Date(x.editedAt)))}</span> (${x.editCount || 1} مرة) — التفاصيل بسجل الحركات`; first.appendChild(n); }
   if (x.flags?.length) { const n = document.createElement('div'); n.className = 'warnline'; n.style.marginTop = '8px'; n.textContent = '⚠ ' + x.flags.join('، '); first.appendChild(n); }
@@ -7723,7 +7725,7 @@ function openInvoicePdf(x) {
     const x = getInv(); if (!x) return;
     const first = $('#det .card'); if (!first || first.querySelector('[data-ipdf]')) return;
     let da = first.querySelector('.dact'); if (!da) { da = document.createElement('div'); da.className = 'dact'; first.appendChild(da); }
-    da.insertAdjacentHTML('afterbegin', `<button class="btn ipdf" data-ipdf="1">${I('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15h6M9 11h2"/>')}فاتورة PDF · طباعة</button>`);
+    da.insertAdjacentHTML('afterbegin', `<button class="btn ipdf" data-ipdf="1">${I('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 15h6M9 11h2"/>')}PDF / طباعة</button>`);
   };
   $('#det').addEventListener('click', e => { if (e.target.closest('[data-ipdf]')) openInvoicePdf(getInv()); });
 }
@@ -7876,13 +7878,20 @@ function findByImei(q) { const c = normImei(q); if (c.length < 4) return []; ret
     box.querySelector('.im-add')?.remove(); box.querySelector('.im-in')?.remove();
     box.insertAdjacentHTML('beforeend', `<span class="im-in"><input class="num" inputmode="numeric" autocomplete="off" placeholder="امسح أو اكتب الرقم" aria-label="IMEI"><button type="button" class="im-ok">إضافة</button></span><div class="im-e" hidden></div>`);
     const inp = box.querySelector('.im-in input'), err = box.querySelector('.im-e');
-    const add = () => {
+    const add = async () => {
       const it = inv?.items[i]; if (!it) return;
       const c = normImei(inp.value); if (!c) { renderItems(); return; }
       let e = imeiCheck(c);
       if (!e && inv.items.some(x => (x.imeis || []).includes(c))) e = 'هذا الرقم مضاف بهذي الفاتورة';
       const sold = !e && imeiSoldIn(c, inv.editId); if (sold) e = `هذا الجهاز مبيوع بفاتورة #${sold.no} (${sold.customerName})`;
       if (e) { err.textContent = e; err.hidden = false; inp.select(); return; }
+      // the number is in stock under another product: say so, and let the seller choose
+      const inf = imeiInfo(c), op = inf?.pid && inf.pid !== it.pid ? prodAny(inf.pid) : null;
+      if (op) {
+        const ch = await askChoice('الرقم مسجل على منتج ثاني', `${c} مسجل بالمخزون على «${op.name}»، مو «${it.name}».`, `حطه على «${op.name}»`, 'خليه هنا');
+        if (ch === 'yes') { renderItems(); addToSale(op, c); return; }
+        if (ch !== 'no') { inp.select(); return; }
+      }
       it.imeis = [...(it.imeis || []), c]; renderItems();
       if (it.imeis.length < it.qty) setTimeout(() => openInput(i), 30);
     };
@@ -8501,11 +8510,12 @@ function stockReportData(days) {
     return {p, qty, rate, left, sug, cap: p.stock * (p.buy || 0)};
   });
   const now = rows.filter(r => r.qty > 0 && (r.p.stock === 0 || (r.left != null && r.left < 10))).sort((a, b) => (a.left ?? 0) - (b.left ?? 0));
-  const soon = rows.filter(r => !now.includes(r) && lowStock(r.p)).sort((a, b) => a.p.stock - b.p.stock);
+  const out = rows.filter(r => !now.includes(r) && r.p.stock === 0).sort((a, b) => b.qty - a.qty || String(a.p.name).localeCompare(String(b.p.name), 'ar'));
+  const soon = rows.filter(r => !now.includes(r) && !out.includes(r) && lowStock(r.p)).sort((a, b) => a.p.stock - b.p.stock);
   const stale = rows.filter(r => r.p.stock > 0 && !r.qty).sort((a, b) => b.cap - a.cap);
   const slow = rows.filter(r => r.qty > 0 && r.left != null && r.left > 120).sort((a, b) => b.left - a.left);
   const top = rows.filter(r => r.qty > 0).sort((a, b) => b.qty - a.qty).slice(0, 8);
-  return {now, soon, stale, slow, top, value: stockValue(products), days};
+  return {now, out, soon, stale, slow, top, value: stockValue(products), days};
 }
 const rptRow = r => ({name: r.p.name, stock: r.p.stock, qty: r.qty, left: r.left, sug: r.sug, cap: r.cap});
 function openStockReport() {
@@ -8518,7 +8528,8 @@ function openStockReport() {
       <div class="pk-form rp">
         <div class="chipsel" id="rpDays">${[30, 60, 90].map(d => `<button type="button" data-d="${d}" class="${d === days ? 'on' : ''}">آخر ${d} يوم</button>`).join('')}</div>
         <div class="rp-k"><div><small>قطع بالمخزون</small><b class="num">${money(v.qty)}</b></div><div><small>بسعر الشراء</small><b class="num">${money(v.cost)}</b></div><div><small>بسعر البيع</small><b class="num">${money(v.sale)}</b></div></div>
-        ${!D.now.length && !D.soon.length && !D.stale.length && !D.slow.length ? '<div class="base-note" style="text-align:center;padding:20px 0">المخزون مرتب ✓ ماكو شي يحتاج انتباه</div>' : ''}
+        ${!D.now.length && !D.out.length && !D.soon.length && !D.stale.length && !D.slow.length ? '<div class="base-note" style="text-align:center;padding:20px 0">المخزون مرتب ✓ ماكو شي يحتاج انتباه</div>' : ''}
+        ${sec('rp-red', '⛔', 'نفذ من المخزون', 'ما باقي منهن ولا قطعة.', D.out, r => `<b style="color:#BE123C">نفذ</b>${r.qty ? ` · انباع <b class="num">${r.qty}</b>` : ''}`)}
         ${sec('rp-red', '🛒', 'أنصحك تجيبهن هسه', `ينباعن ويخلصن خلال أقل من 10 أيام. المقترح يكفيك شهر.`, D.now, r => `بالمخزون <b class="num">${r.p.stock}</b> · انباع <b class="num">${r.qty}</b> · ${r.p.stock === 0 ? '<b style="color:#BE123C">نفذ</b>' : `يخلص خلال <b class="num">${r.left}</b> يوم`} · جيب <b class="num">${r.sug}</b>`)}
         ${sec('rp-amber', '⏳', 'قرب يخلصن', 'تحت الحد اللي محدده للتنبيه.', D.soon, r => `باقي <b class="num">${r.p.stock}</b>${r.qty ? ` · انباع <b class="num">${r.qty}</b>` : ''}`)}
         ${sec('rp-top', '🔥', 'الأكثر مبيعاً', `بآخر ${days} يوم.`, D.top, r => `انباع <b class="num">${r.qty}</b> · باقي <b class="num">${r.p.stock}</b>`)}
@@ -8537,6 +8548,7 @@ async function drawStockReport(D, size, bw) {
   try { await document.fonts?.ready; } catch (e) {}
   const s = cfg(), th = themeNow(), ink = '#0F172A', mute = bw ? '#333' : '#64748B';
   const SECS = [
+    ['نفذ من المخزون', D.out, r => [r.p.name, 0, r.qty, 'نفذ', ''], '#BE123C'],
     ['أنصحك تجيبهن هسه', D.now, r => [r.p.name, r.p.stock, r.qty, r.p.stock === 0 ? 'نفذ' : r.left + ' يوم', 'جيب ' + r.sug], '#BE123C'],
     ['قرب يخلصن', D.soon, r => [r.p.name, r.p.stock, r.qty, r.left != null ? r.left + ' يوم' : '—', ''], '#B45309'],
     ['الأكثر مبيعاً', D.top, r => [r.p.name, r.p.stock, r.qty, r.left != null ? r.left + ' يوم' : '—', ''], '#047857'],
@@ -8890,6 +8902,155 @@ function camDecorate() {
     }
     return os.apply(this, arguments);
   };
+}
+
+/* ================= v25: cloud-test fixes (the 10 approved points) ================= */
+// a confirm with two real answers: 'yes' / 'no' — closing it (outside tap) answers null
+function askChoice(title, text, yes, no) {
+  return new Promise(res => {
+    const nb = $('#dlgNo'), yb = $('#dlgYes'), oldN = nb.textContent, oldOn = nb.onclick; let picked = null;
+    const restore = () => { nb.textContent = oldN; nb.onclick = oldOn; yb.classList.add('danger'); yb.classList.remove('pri'); };
+    confirmDlg(title, text, yes, () => { restore(); res('yes'); });
+    yb.classList.remove('danger'); yb.classList.add('pri');
+    nb.textContent = no; nb.onclick = () => { picked = 'no'; closeDlg(); };
+    dlgNoFn = () => { restore(); res(picked); };
+  });
+}
+
+/* --- #1 a barcode scanned while the cursor sits in a number box (price, quantity, amount) never goes into it --- */
+const SCAN0 = {el: null, v: '', last: 0, t: 0};
+const NUMBOX_SKIP = '#fBarcode, .im-in input, [data-pima], [data-scanjoin], #pkQ, #q, #iq, .pi-name input, #pinIn';
+const isNumBox = el => !!el && el.tagName === 'INPUT' && !el.readOnly && !el.disabled && !el.matches(NUMBOX_SKIP) &&
+  (/^(numeric|decimal|tel)$/.test(el.inputMode || el.getAttribute('inputmode') || '') || el.type === 'number' || el.type === 'tel' || el.classList.contains('money') || el.classList.contains('qin') || el.classList.contains('ip'));
+document.addEventListener('keydown', e => {
+  const now = performance.now();
+  if (e.key !== 'Enter' && e.key !== 'Tab' && now - SCAN0.last > 80) { const a = document.activeElement; SCAN0.el = a; SCAN0.v = a && 'value' in a ? a.value : ''; }   // what the box held before the first key
+  SCAN0.last = now; clearTimeout(SCAN0.t);
+  if (e.key === 'Enter' || e.key === 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+  // scanners that send no Enter: a short silence ends the code
+  SCAN0.t = setTimeout(() => { const a = document.activeElement, b = SCAN.buf; if (isNumBox(a) && isBurst(b)) { SCAN.buf = []; onScan(b.map(k => k.ch).join(''), a, null, b.map(k => k.typed).join('')); } }, 140);
+}, true);
+{
+  const os2 = onScan;
+  onScan = function (code, target, ev, typed) {
+    if (!isNumBox(target)) return os2.apply(this, arguments);
+    ev?.preventDefault(); ev?.stopImmediatePropagation?.();
+    if (SCAN0.el === target) { target.value = SCAN0.v; target.dispatchEvent(new Event('input', {bubbles: true})); }   // the box gets back exactly what it had
+    const h = location.hash, pi = target.closest('.pi');
+    target.blur();
+    if (h === '#product-form') { const fb = $('#fBarcode'); if (fb) { fb.value = code; fb.dispatchEvent(new Event('input', {bubbles: true})); $('#barErr')?.classList.remove('on'); toast('انقرا الباركود وانحط بخانة الباركود ✓'); } return; }
+    if (pi) { const nm = pi.querySelector('.pi-name input'); if (nm) return onScan(code, nm, null, ''); }
+    if (h === '#sales' && !$('#pickBd').classList.contains('on') && !$('#fsBd').classList.contains('on')) return os2.call(this, code, document.body, null, '');
+    toast('هذي خانة أرقام، الباركود ما ينكتب بيها', false);
+  };
+}
+
+/* --- #2 a price far from normal asks before saving · #7 an archived product asks before selling --- */
+{
+  const si2 = saveInvoice;
+  saveInvoice = async function () {
+    if (inv && inv.items?.length) {
+      const arch = inv.items.map(it => it.pid ? prodAny(it.pid) : null).filter(p => p && p.archived);
+      if (arch.length && !(await askConfirm('منتج مؤرشف بالفاتورة', `«${arch.map(p => p.name).join('، ')}» مؤرشف (مشال من القوائم). تبيعه بهذي الفاتورة؟`, 'بيعه'))) return;
+      const odd = [];
+      inv.items.forEach(it => {
+        const p = it.pid ? prodAny(it.pid) : null, pr = Number(it.price) || 0, buy = it.buy ?? p?.buy ?? null;
+        let exp = null; try { exp = p ? unitPrice(p, inv.type, curMonths()) : null; } catch (e) {}
+        if (buy != null && pr < buy) odd.push(`«${it.name}» بـ ${money(pr)} — أقل من سعر الشراء ${money(buy)}`);
+        else if (exp && pr > exp * 3) odd.push(`«${it.name}» بـ ${money(pr)} — أكثر من 3 أضعاف سعره ${money(exp)}`);
+      });
+      if (odd.length && !(await askConfirm('تأكد من السعر', odd.join(' · ') + '. متأكد تحفظ الفاتورة؟', 'احفظ'))) return;
+    }
+    return si2.apply(this, arguments);
+  };
+}
+
+/* --- #4 a broken picture is caught the moment it is chosen; saving never fails because of a picture --- */
+const imageOpens = f => new Promise(r => {
+  if (typeof createImageBitmap === 'function') { createImageBitmap(f).then(b => { try { b.close?.(); } catch (e) {} r(true); }, () => tryImg()); } else tryImg();
+  function tryImg() { const u = URL.createObjectURL(f), im = new Image(); im.onload = () => { URL.revokeObjectURL(u); r(im.naturalWidth > 0); }; im.onerror = () => { URL.revokeObjectURL(u); r(false); }; im.src = u; }
+});
+F.img.addEventListener('change', async () => {
+  const f = F.img.files?.[0]; if (!f || !formState || formState.file !== f) return;
+  if (await imageOpens(f)) return;
+  if (!formState || formState.file !== f) return;
+  formState.file = null; F.img.value = '';
+  const keep = formState.removed ? null : formState.editing || formState.copyImg || null;
+  setPreview(keep ? imgSrc(keep) : '');
+  toast('الصورة خربانة أو ما تنفتح، اختار صورة ثانية', false);
+});
+{
+  const st = storeImage;
+  storeImage = async function (file) {
+    try { return await st(file); }
+    catch (e) { toast('الصورة ما انحفظت لأنها خربانة — انحفظ المنتج بدونها', false); return {}; }
+  };
+}
+
+/* --- #5 product prices: under the buying price, zero, or impossibly big --- */
+const PRICE_MAX = 1e9;   // a billion dinars: nothing in the shop costs more
+{
+  const spf = saveProductForm;
+  saveProductForm = async function (e) {
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+    if (saving || !formState) return;
+    const v = readForm(), init = formState.init || {}, ed = formState.editing;
+    if (v.name) {
+      const L = [['buy', 'سعر الشراء', F.buy, '#buyBox'], ['cash', 'سعر النقد', F.cash, '#cashBox'], ['debt', 'سعر الدين', F.debt, null], ['inst', 'سعر الأقساط', F.inst, null]];
+      for (const [k, lb, el, box] of L) {
+        if (v[k] != null && v[k] >= PRICE_MAX) { toast(`${lb} كبير كلش (${money(v[k])}). تأكد منه`, false); el?.focus(); el?.closest('.inp')?.classList.add('err'); return; }
+      }
+      const changed = k => !ed || (v[k] ?? null) !== (init[k] ?? null);
+      const warn = [];
+      if (v.cash === 0 && changed('cash')) warn.push('سعر النقد صفر');
+      if (v.buy != null && v.buy > 0) {
+        if (v.cash != null && v.cash > 0 && v.cash < v.buy && (changed('cash') || changed('buy'))) warn.push(`سعر النقد ${money(v.cash)} أقل من الشراء ${money(v.buy)}`);
+        if (v.debtMode === 'value' && v.debt != null && v.debt < v.buy && (changed('debt') || changed('buy'))) warn.push(`سعر الدين ${money(v.debt)} أقل من الشراء`);
+        if (v.instMode === 'value' && v.inst != null && v.inst < v.buy && (changed('inst') || changed('buy'))) warn.push(`سعر الأقساط ${money(v.inst)} أقل من الشراء`);
+      }
+      if (warn.length && !(await askConfirm('تأكد من الأسعار', warn.join(' · ') + '. راح تخسر بكل قطعة. متأكد؟', 'احفظ هيچ'))) { F.cash.focus(); return; }
+    }
+    return spf.call(this, e);
+  };
+}
+
+/* --- #6 the invoice found by IMEI shows in the list (no "no results" under it) --- */
+{
+  const ri2 = renderInvoices;
+  renderInvoices = function () {
+    ri2();
+    const q = normImei($('#iq')?.value || '');
+    if (q.length < 4 || !/\d{4,}|[A-Z0-9]{6,}/.test(q)) return;
+    const hit = findByImei(q); if (!hit.length) return;
+    const box = $('#ilist'); box.querySelector('.empty')?.remove();
+    const have = new Set([...box.querySelectorAll('[data-iid]')].map(b => b.dataset.iid));
+    box.insertAdjacentHTML('beforeend', hit.filter(x => !have.has(x.id)).map(x => invCard(x)).join(''));
+  };
+}
+
+/* --- #8 the product picker draws 60 at a time, the rest as you scroll --- */
+{
+  let pkObs = null;
+  renderPickList = (orig => function () {
+    if (!pickCfg || !pickCfg.smart) return orig();
+    const q = $('#pkQ').value.trim(), box = $('#pkList');
+    const list = q ? smartFilter(pickCfg.items(), q, pText) : pickCfg.items();
+    pkObs?.disconnect(); pkObs = null;
+    if (!list.length) { box.innerHTML = `<div class="pk-empty">${pickCfg.empty(q)}</div>`; return; }
+    box.innerHTML = ''; let n = 0;
+    const more = () => {
+      box.querySelector('.pk-more')?.remove();
+      const part = list.slice(n, n + 60); n += part.length;
+      box.insertAdjacentHTML('beforeend', part.map(pickCfg.render).join(''));
+      box.querySelectorAll('.pk-it[data-k]:not([data-cp])').forEach(b => { b.dataset.cp = '1'; const p = prodAny(b.dataset.k), c = p && capOf(p.name); if (c) b.querySelector('.tx b')?.insertAdjacentHTML('afterend', ` <span class="capc">${c}</span>`); });
+      if (n < list.length) {
+        box.insertAdjacentHTML('beforeend', `<div class="pk-more">باقي <b class="num">${list.length - n}</b> منتج — نزّل حتى يطلعن</div>`);
+        if ('IntersectionObserver' in window) { pkObs = pkObs || new IntersectionObserver(es => { if (es.some(x => x.isIntersecting)) more(); }); pkObs.observe(box.querySelector('.pk-more')); }
+        else box.querySelector('.pk-more').onclick = more;
+      }
+    };
+    more();
+  })(renderPickList);
 }
 
 /* ---------- start ---------- */
