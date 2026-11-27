@@ -1,13 +1,19 @@
 name: نسخة الحاسبة (Windows EXE)
 
+# كل ما يتحدث التطبيق، ينبني EXE جديد وينزل بـ Releases.
+# البرنامج بأجهزة الناس يشوفه ويطلعلهم «حدّث هسه».
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['desktop/**', '.github/workflows/desktop.yml']
+    paths: ['src/**', 'public/app/**', 'desktop/**', '.github/workflows/desktop.yml']
 
 permissions:
   contents: write
+
+concurrency:
+  group: desktop
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -19,37 +25,23 @@ jobs:
         with:
           node-version: 20
 
-      - name: Site address (from the repo variable SITE_URL, if set)
+      - name: Put the app inside the program
         shell: pwsh
-        env:
-          SITE_URL: ${{ vars.SITE_URL }}
         run: |
-          if ($env:SITE_URL) {
-            $u = $env:SITE_URL.TrimEnd('/') + '/app/'
-            @{ url = $u } | ConvertTo-Json | Set-Content -Path desktop/config.json -Encoding utf8NoBOM
-          }
-          Get-Content desktop/config.json
+          if (Test-Path desktop/app) { Remove-Item desktop/app -Recurse -Force }
+          Copy-Item public/app desktop/app -Recurse
+          Get-Content desktop/app/version.json
+
+      - name: Program version (goes up by itself every build)
+        working-directory: desktop
+        run: npm version 1.0.${{ github.run_number }} --no-git-tag-version
 
       - name: Install
         working-directory: desktop
         run: npm install --no-audit --no-fund
 
-      - name: Build EXE
+      - name: Build EXE and publish it to Releases
         working-directory: desktop
-        run: npx electron-builder --win nsis --x64 --publish never
-
-      - name: Version
-        id: v
-        shell: pwsh
-        run: |
-          $v = (Get-Content desktop/package.json | ConvertFrom-Json).version
-          "version=$v" >> $env:GITHUB_OUTPUT
-
-      - name: Publish to GitHub Releases
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: desktop-v${{ steps.v.outputs.version }}-${{ github.run_number }}
-          name: دكّان للحاسبة ${{ steps.v.outputs.version }}
-          body: نسخة ويندوز من دكّان. تفتح الموقع بنافذة خاصة، وكل تحديث بالموقع يوصلها لحاله.
-          files: desktop/dist/Dukkan-Setup.exe
-          make_latest: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win nsis --x64 --publish always

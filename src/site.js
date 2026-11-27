@@ -116,6 +116,27 @@
     } catch (e) {}
   });
 
+  /* ---------- 3-ب) the Windows program: "update now" banner ---------- */
+  var upd = {stage: 'idle'};
+  function banner() {
+    var b = document.getElementById('dkUpd'), s = upd;
+    var show = s.stage === 'ready' || s.stage === 'manual' || s.stage === 'downloading';
+    if (!show) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('div'); b.id = 'dkUpd'; b.setAttribute('role', 'status'); document.body.appendChild(b); }
+    var v = s.version ? ' <b class="num">' + esc(s.version) + '</b>' : '';
+    if (s.stage === 'downloading') b.innerHTML = '<span>في تحديث جديد' + v + ' — جاري التنزيل <b class="num">' + (s.percent || 0) + '%</b></span><i style="width:' + (s.percent || 0) + '%"></i>';
+    else b.innerHTML = '<span>' + (s.stage === 'ready' ? 'التحديث جاهز' + v + ' — لازم تحدث حتى تاخذ آخر نسخة' : 'في نسخة جديدة' + v + ' — لازم تحدث') + '</span>'
+      + '<button type="button" id="dkUpdGo">' + (s.stage === 'ready' ? 'حدّث هسه' : 'نزّل التحديث') + '</button><button type="button" id="dkUpdX" aria-label="بعدين">بعدين</button>';
+    var go = document.getElementById('dkUpdGo'), x = document.getElementById('dkUpdX');
+    if (go) go.onclick = function () { go.disabled = true; go.textContent = s.stage === 'ready' ? 'جاري التحديث...' : 'انفتح التنزيل'; window.dukkanDesktop.install(); };
+    if (x) x.onclick = function () { b.remove(); upd = {stage: 'later'}; };
+  }
+  if (window.dukkanDesktop) {
+    document.addEventListener('DOMContentLoaded', function () {
+      window.dukkanDesktop.onUpdate(function (s) { if (upd.stage === 'later' && s.stage !== 'ready') return; upd = s || {stage: 'idle'}; banner(); var c = document.getElementById('dkChk'); if (c) c.textContent = upd.stage === 'checking' ? 'جاري الفحص...' : upd.stage === 'latest' ? 'عندك آخر نسخة ✓' : 'تحقق من التحديث'; });
+    });
+  }
+
   /* ---------- 4) settings: version, install, the Windows app ---------- */
   var installEv = null;
   addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); installEv = e; });
@@ -126,7 +147,7 @@
     var rows = [];
     rows.push('<div class="dk-row"><span>نسخة التطبيق</span><b class="num">' + esc(window.APP_VERSION) + '</b></div>');
     rows.push('<div class="dk-note">يتحدث لحاله كل ما تفتحه وأنت متصل بالإنترنت.</div>');
-    if (desktop) rows.push('<div class="dk-note">أنت تستخدم نسخة الحاسبة (ويندوز).</div>');
+    if (desktop) { rows.push('<div class="dk-note">أنت تستخدم نسخة الحاسبة (ويندوز). التطبيق كله داخل البرنامج ويشتغل بدون إنترنت، وإذا نزلت نسخة جديدة يطلعلك زر «حدّث هسه».</div>'); if (window.dukkanDesktop) rows.push('<button type="button" class="btn ghost dk-btn" id="dkChk">تحقق من التحديث</button>'); }
     else {
       if (installEv && !standalone) rows.push('<button type="button" class="btn ghost dk-btn" id="dkInstall">ثبّت التطبيق على هذا الجهاز</button>');
       if (isIOS && !standalone) rows.push('<div class="dk-note">للآيفون: من Safari اضغط زر المشاركة ثم <b>إضافة إلى الشاشة الرئيسية</b>.</div>');
@@ -145,13 +166,17 @@
       form.insertAdjacentHTML('afterbegin', box(c));
       var b = document.getElementById('dkInstall');
       if (b) b.onclick = function () { installEv.prompt(); installEv.userChoice.finally(function () { installEv = null; b.remove(); }); };
+      var ck = document.getElementById('dkChk'); if (ck) ck.onclick = function () { ck.textContent = 'جاري الفحص...'; window.dukkanDesktop.check(); };
     });
   }
   document.addEventListener('DOMContentLoaded', function () {
     var st = document.createElement('style');
     st.textContent = '.dk-box{background:#EEF2FF;border-radius:16px;padding:14px;margin:0 0 14px;display:grid;gap:8px}.dk-h{font-weight:700;font-size:15px;color:#3730A3}'
       + '.dk-row{display:flex;justify-content:space-between;align-items:center;font-size:14.5px}.dk-row b{direction:ltr}.dk-note{font-size:13px;color:#475569;line-height:1.6}'
-      + '.dk-warn{color:#B45309}.dk-btn{display:flex;align-items:center;justify-content:center;min-height:46px;text-decoration:none;width:100%}';
+      + '.dk-warn{color:#B45309}.dk-btn{display:flex;align-items:center;justify-content:center;min-height:46px;text-decoration:none;width:100%}'
+      + '#dkUpd{position:fixed;top:calc(10px + env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:250;width:min(560px,calc(100% - 20px));display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:12px 14px;border-radius:16px;background:#1E1B4B;color:#fff;box-shadow:0 18px 40px -16px rgba(0,0,0,.6);overflow:hidden;font-size:14.5px}'
+      + '#dkUpd span{flex:1 1 220px;line-height:1.6}#dkUpd b{direction:ltr;unicode-bidi:isolate}#dkUpd button{border:0;border-radius:11px;min-height:40px;padding:0 16px;font:inherit;font-weight:700;cursor:pointer}'
+      + '#dkUpdGo{background:#fff;color:#312E81}#dkUpdX{background:rgba(255,255,255,.14);color:#fff}#dkUpd i{position:absolute;bottom:0;right:0;height:3px;background:#F472B6;transition:width .3s}';
     document.head.appendChild(st);
     var fs = document.getElementById('fs');
     if (fs) new MutationObserver(inject).observe(fs, {childList: true});

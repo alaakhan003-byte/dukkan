@@ -38,5 +38,5 @@ exe = f"https://github.com/{cfg['repo']}/releases/latest/download/Dukkan-Setup.e
 land = (R / 'src' / 'landing.html').read_text(encoding='utf-8').replace('__VERSION__', version).replace('__EXE__', exe).replace('__REPO__', cfg['repo'])
 (R / 'public' / 'index.html').write_text(land, encoding='utf-8')
 if cfg['url']:
-    (R / 'desktop' / 'config.json').write_text(json.dumps({'url': cfg['url'] + '/app/'}, indent=2) + '\n')
+    (R / 'desktop' / 'config.json').write_text(json.dumps({'url': cfg['url'] + '/app/', 'download': exe}, indent=2) + '\n')
 print('built', version, '| exe:', exe)

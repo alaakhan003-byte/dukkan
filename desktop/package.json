@@ -11,6 +11,9 @@
     "start": "electron .",
     "dist": "electron-builder --win nsis --x64 --publish never"
   },
+  "dependencies": {
+    "electron-updater": "6.8.12"
+  },
   "devDependencies": {
     "electron": "44.11.2",
     "electron-builder": "26.18.1"
@@ -20,8 +23,9 @@
     "productName": "Dukkan",
     "artifactName": "Dukkan-Setup.${ext}",
     "directories": {"output": "dist"},
-    "files": ["main.js", "config.json", "offline.html", "icon.png"],
+    "files": ["main.js", "preload.js", "config.json", "icon.png", "app/**/*"],
     "win": {"target": [{"target": "nsis", "arch": ["x64"]}], "icon": "icon.ico"},
-    "nsis": {"oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "Dukkan", "runAfterFinish": true}
+    "nsis": {"oneClick": true, "perMachine": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "Dukkan", "runAfterFinish": true, "deleteAppDataOnUninstall": false},
+    "publish": [{"provider": "github", "owner": "alaakhan003-byte", "repo": "dukkan", "releaseType": "release"}]
   }
 }
