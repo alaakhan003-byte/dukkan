@@ -1,5 +1,5 @@
 {
-  "version": "2026.11.27-2042",
+  "version": "2026.11.27-2051",
   "exe": "https://github.com/alaakhan003-byte/dukkan/releases/latest/download/Dukkan-Setup.exe",
   "repo": "alaakhan003-byte/dukkan",
   "files": [
@@ -31,7 +31,7 @@
     {
       "path": "index.html",
       "size": 757148,
-      "sha256": "6b6a9b4c9240666be9e6e84a81d99dd0693392a07f04a4ad8411ac5a3c9c0d15"
+      "sha256": "dbcf844e85eeba713cedddb35c796a068ca953bd067784a2d7c9ae552ba762cb"
     },
     {
       "path": "manifest.webmanifest",
@@ -40,8 +40,8 @@
     },
     {
       "path": "site.js",
-      "size": 12912,
-      "sha256": "b18dcc2d12e76caeea009bd2dee7218b4465750e0ecc08ca6c9dba479b84f1f7"
+      "size": 14231,
+      "sha256": "f245873c17b02568d5d09cd9a3f2bc653500a7a141635a212254b8982b937802"
     },
     {
       "path": "vendor/zxing.min.js",

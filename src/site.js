@@ -93,22 +93,35 @@
   function readCfg() { return fetch('version.json?t=' + Date.now(), {cache: 'no-store'}).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); }
   var cfgP = readCfg();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    {
-      navigator.serviceWorker.register('sw.js').then(function (reg) {
-        reg.update().catch(function () {});
-        cfgP.then(function (c) {
-          if (!c || !c.version || c.version === window.APP_VERSION) return;
-          var k = 'dk:upd:' + c.version;
-          try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); } catch (e) {}
-          try { localStorage.setItem('dk:updated', c.version); } catch (e) {}
-          // the new copy is fetched fresh; reload once when it is ready
-          var done = false, go = function () { if (!done) { done = true; location.reload(); } };
-          navigator.serviceWorker.addEventListener('controllerchange', go);
-          reg.update().then(function () { setTimeout(go, 1500); }).catch(go);
-        });
-      }).catch(function () {});
-    }
+    navigator.serviceWorker.register('sw.js').then(function (reg) { reg.update().catch(function () {}); }).catch(function () {});
   }
+  // the website and the iPhone/Android app: look for a new version on opening, on coming back to the app
+  // (the iPhone keeps the app asleep in the background, so "opening" it again does not reload it), when the internet returns, and every 20 minutes
+  var lastAct = Date.now(), pendingV = null;
+  ['pointerdown', 'keydown', 'input'].forEach(function (ev) { addEventListener(ev, function () { lastAct = Date.now(); }, true); });
+  function quiet(reason) { return reason === 'load' || reason === 'resume' || document.visibilityState === 'hidden' || Date.now() - lastAct > 90000; }
+  function goNew(v) {
+    var k = 'dk:upd:' + v;
+    try { if (sessionStorage.getItem(k)) return; sessionStorage.setItem(k, '1'); localStorage.setItem('dk:updated', v); } catch (e) {}
+    var reload = function () { location.reload(); };
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+      navigator.serviceWorker.getRegistration().then(function (r) { return r && r.update(); }).catch(function () {}).then(function () { setTimeout(reload, 300); });
+    } else reload();
+  }
+  function checkWeb(reason) {
+    if (desktop) return;                      // the Windows program updates itself (main.js)
+    (reason === 'load' ? cfgP : readCfg()).then(function (c) {
+      if (!c || !c.version || !(c.version > window.APP_VERSION)) return;
+      pendingV = c.version;
+      if (quiet(reason)) goNew(c.version);
+    });
+  }
+  checkWeb('load');
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') checkWeb('resume'); else if (pendingV) goNew(pendingV); });
+  addEventListener('pageshow', function (e) { if (e.persisted) checkWeb('resume'); });
+  addEventListener('online', function () { checkWeb('online'); });
+  setInterval(function () { if (pendingV && quiet('timer')) goNew(pendingV); else checkWeb('timer'); }, 20 * 60 * 1000);
+  setInterval(function () { if (pendingV && quiet('idle')) goNew(pendingV); }, 30 * 1000);
   addEventListener('load', function () {
     try {
       var v = localStorage.getItem('dk:updated');
@@ -125,7 +138,7 @@
     if (!b) { b = document.createElement('div'); b.id = 'dkUpd'; b.setAttribute('role', 'status'); document.body.appendChild(b); }
     var v = s.version ? ' <b class="num">' + esc(s.version) + '</b>' : '';
     if (s.stage === 'downloading') b.innerHTML = '<span>في تحديث جديد' + v + ' — جاري التنزيل <b class="num">' + (s.percent || 0) + '%</b></span><i style="width:' + (s.percent || 0) + '%"></i>';
-    else b.innerHTML = '<span>' + (s.stage === 'web-ready' ? 'التحديث جاهز' + v + ' — لازم تحدث (ياخذ ثانية)' : s.stage === 'ready' ? 'تحديث البرنامج جاهز' + v + ' — لازم تحدث' : 'في نسخة جديدة' + v + ' — لازم تحدث') + '</span>'
+    else b.innerHTML = '<span>' + (s.stage === 'web-ready' ? 'التحديث جاهز' + v + ' — يتحدث لحاله بعد شوية، أو اضغط حدّث هسه' : s.stage === 'ready' ? 'تحديث البرنامج جاهز' + v + ' — لازم تحدث' : 'في نسخة جديدة' + v + ' — لازم تحدث') + '</span>'
       + '<button type="button" id="dkUpdGo">' + (s.stage === 'manual' ? 'نزّل التحديث' : 'حدّث هسه') + '</button><button type="button" id="dkUpdX" aria-label="بعدين">بعدين</button>';
     var go = document.getElementById('dkUpdGo'), x = document.getElementById('dkUpdX');
     if (go) go.onclick = function () { go.disabled = true; go.textContent = s.stage === 'manual' ? 'انفتح التنزيل' : 'جاري التحديث...'; window.dukkanDesktop.install(); };
