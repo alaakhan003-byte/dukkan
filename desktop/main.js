@@ -63,6 +63,69 @@ function showWindow() {
   win.on('closed', () => { win = null; rendererReady = false; if (programReady && !quitting) installProgram(); });
 }
 
+/* ---------- notifications: a live line to the shop, even with the window closed ---------- */
+let sess = null, ws = null, wsTry = 0, wsTimer = 0, pingTimer = 0, lastEv = 0;
+const readJSON = (f, d) => { try { return JSON.parse(fs.readFileSync(UD(f), 'utf8')); } catch (e) { return d; } };
+const writeJSON = (f, v) => { try { if (v == null) fs.rmSync(UD(f), {force: true}); else fs.writeFileSync(UD(f), JSON.stringify(v)); } catch (e) {} };
+const notifyOn = () => !flag('notify-off');
+function notify(title, body) {
+  if (!notifyOn() || !Notification.isSupported()) return;
+  if (win && !win.isDestroyed() && win.isFocused()) return;          // the open app shows its own note on the side
+  try {
+    const n = new Notification({title, body, icon: path.join(__dirname, 'icon.png'), silent: false});
+    n.on('click', () => { showWindow(); setTimeout(() => { try { win && win.webContents.executeJavaScript("location.hash='invoices'"); } catch (e) {} }, 600); });
+    n.show();
+  } catch (e) {}
+}
+async function catchUp() {
+  // what happened while the computer was off or the program was closed
+  if (!sess || !SITE) return;
+  try {
+    const r = await net.fetch(`${SITE}/api/events?since=${lastEv}`, {headers: {authorization: 'Bearer ' + sess.token}, cache: 'no-store'});
+    if (!r.ok) return;
+    const L = await r.json(); if (!Array.isArray(L) || !L.length) return;
+    const first = !lastEv; lastEv = L[L.length - 1].id; writeJSON('events.json', {last: lastEv, shop: sess.shop});
+    if (first) return;                                                // first connection on this computer: no flood of old news
+    const others = L.filter(e => !e.mine);
+    if (others.length && others.length <= 3) others.forEach(e => notify(e.title, e.body));
+    else if (others.length) notify(`صار ${others.length} حركات وانت غايب`, others.slice(-3).map(e => e.title).join(' · '));
+  } catch (e) {}
+}
+function live() {
+  clearTimeout(wsTimer);
+  if (!sess || !SITE || typeof WebSocket === 'undefined') return;
+  if (ws && (ws.readyState === 0 || ws.readyState === 1)) return;
+  try { ws = new WebSocket(SITE.replace(/^http/, 'ws') + '/api/live?shop=' + encodeURIComponent(sess.shop)); } catch (e) { return; }
+  const me = ws;
+  me.onopen = () => me.send(JSON.stringify({auth: sess.token}));
+  me.onmessage = e => {
+    if (e.data === 'pong') return;
+    let m; try { m = JSON.parse(String(e.data)); } catch (x) { return; }
+    if (m.t === 'ok') { wsTry = 0; catchUp(); }
+    else if (m.t === 'ev') { if (m.id > lastEv) { lastEv = m.id; writeJSON('events.json', {last: lastEv, shop: sess.shop}); } if (m.by !== sess.phone) notify(m.title, m.body); }
+    else if (m.t === 'bye') { sess = null; }
+  };
+  me.onclose = () => {
+    if (ws === me) ws = null;
+    clearInterval(pingTimer);
+    if (!sess) return;
+    wsTimer = setTimeout(live, Math.min(60000, 2000 * Math.pow(2, wsTry++)));
+  };
+  me.onerror = () => {};
+  clearInterval(pingTimer); pingTimer = setInterval(() => { try { if (me.readyState === 1) me.send('ping'); } catch (e) {} }, 25000);
+}
+function setSession(s) {
+  const changed = JSON.stringify(s) !== JSON.stringify(sess);
+  sess = s && s.token ? s : null;
+  writeJSON('session.json', sess);
+  if (!changed) return;
+  try { ws && ws.close(); } catch (e) {} ws = null;
+  const ev = readJSON('events.json', {});
+  lastEv = sess && ev.shop === sess.shop ? +ev.last || 0 : 0;
+  if (sess) live();
+}
+ipcMain.on('dk:session', (e, s) => setSession(s));
+
 /* ---------- next to the clock ---------- */
 function makeTray() {
   try {
@@ -72,6 +135,7 @@ function makeTray() {
     const menu = () => Menu.buildFromTemplate([
       {label: 'افتح دكّان', click: showWindow},
       {label: 'تحقق من التحديث', click: () => checkNow()},
+      {label: 'الإشعارات', type: 'checkbox', checked: notifyOn(), click: m => flag('notify-off', !m.checked)},
       {type: 'separator'},
       {label: 'يشتغل مع تشغيل الحاسبة', type: 'checkbox', checked: !!app.getLoginItemSettings({args: ['--hidden']}).openAtLogin, click: m => app.setLoginItemSettings({openAtLogin: m.checked, args: ['--hidden']})},
       {type: 'separator'},
@@ -207,8 +271,10 @@ app.whenReady().then(() => {
   flag('start-hidden', false);
   if (!hidden || !tray) showWindow();
   setupUpdater();
+  sess = readJSON('session.json', null); { const ev = readJSON('events.json', {}); lastEv = sess && ev.shop === sess.shop ? +ev.last || 0 : 0; }
+  if (sess) live();
   setTimeout(checkNow, 1500);                         // on every start…
   setInterval(checkNow, 60 * 60 * 1000);              // …every hour, open or closed
-  powerMonitor.on('resume', () => setTimeout(checkNow, 8000));   // and after the computer wakes up
+  powerMonitor.on('resume', () => { setTimeout(checkNow, 8000); wsTry = 0; try { ws && ws.close(); } catch (e) {} setTimeout(live, 3000); });   // and after the computer wakes up
 });
 app.on('window-all-closed', () => { if (!tray) { quitting = true; app.quit(); } });

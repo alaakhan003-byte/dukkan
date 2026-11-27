@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   window.APP_SITE = true;
-  window.APP_VERSION = '2026.11.27-2109';
+  window.APP_VERSION = '2026.11.27-2128';
   var desktop = /DukkanDesktop\//.test(navigator.userAgent);
   window.APP_DESKTOP = desktop;
 

@@ -24,6 +24,49 @@ class Fail extends Error { constructor(code, msg, status = 400) { super(`FAIL|${
 const readFail = e => { const m = /^FAIL\|(\d+)\|([\w-]+)\|([\s\S]*)$/.exec(String(e?.message || '')); return m ? {status: +m[1], code: m[2], msg: m[3]} : null; };
 const LOCK = [5, 5 * 60 * 1000];   // 5 wrong passwords → 5 minutes wait
 
+/* ---------- real notifications (Web Push: phones and browsers, even with the app closed) ---------- */
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const ub64 = str => { let t = String(str || '').replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; return Uint8Array.from(atob(t), c => c.charCodeAt(0)); };
+const cat = (...a) => { const o = new Uint8Array(a.reduce((n, x) => n + x.length, 0)); let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o; };
+async function hkdf(salt, ikm, info, len) { const k = await crypto.subtle.importKey('raw', ikm, 'HKDF', false, ['deriveBits']); return new Uint8Array(await crypto.subtle.deriveBits({name: 'HKDF', hash: 'SHA-256', salt, info}, k, len * 8)); }
+async function vapidJwt(aud, sub, privJwk) {
+  const key = await crypto.subtle.importKey('jwk', privJwk, {name: 'ECDSA', namedCurve: 'P-256'}, false, ['sign']);
+  const h = b64u(enc.encode(JSON.stringify({typ: 'JWT', alg: 'ES256'}))), c = b64u(enc.encode(JSON.stringify({aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub})));
+  return h + '.' + c + '.' + b64u(await crypto.subtle.sign({name: 'ECDSA', hash: 'SHA-256'}, key, enc.encode(h + '.' + c)));
+}
+// RFC 8291 (aes128gcm): the message is locked so only that phone can read it
+async function webPush(sub, payload, vapid) {
+  const uaPub = ub64(sub.p256dh), auth = ub64(sub.auth);
+  const eph = await crypto.subtle.generateKey({name: 'ECDH', namedCurve: 'P-256'}, true, ['deriveBits']);
+  const asPub = new Uint8Array(await crypto.subtle.exportKey('raw', eph.publicKey));
+  const uaKey = await crypto.subtle.importKey('raw', uaPub, {name: 'ECDH', namedCurve: 'P-256'}, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({name: 'ECDH', public: uaKey}, eph.privateKey, 256));
+  const ikm = await hkdf(auth, shared, cat(enc.encode('WebPush: info\0'), uaPub, asPub), 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(salt, ikm, enc.encode('Content-Encoding: aes128gcm\0'), 16), nonce = await hkdf(salt, ikm, enc.encode('Content-Encoding: nonce\0'), 12);
+  const key = await crypto.subtle.importKey('raw', cek, 'AES-GCM', false, ['encrypt']);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({name: 'AES-GCM', iv: nonce}, key, cat(enc.encode(payload), new Uint8Array([2]))));
+  const body = cat(salt, new Uint8Array([0, 0, 16, 0]), new Uint8Array([65]), asPub, ct);
+  const jwt = await vapidJwt(new URL(sub.endpoint).origin, vapid.sender, vapid.priv);
+  return fetch(sub.endpoint, {method: 'POST', body, headers: {'content-encoding': 'aes128gcm', 'content-type': 'application/octet-stream', ttl: '86400', urgency: 'high', authorization: `vapid t=${jwt}, k=${vapid.pub}`}});
+}
+const money = n => Math.round(+n || 0).toLocaleString('en-US');
+const TYPE = {cash: 'نقد', debt: 'دين', inst: 'أقساط'};
+// what happened to an invoice, in plain words (only sales news: new sale, payment, return, cancel)
+function invoiceNews(cur, out, who) {
+  if (!out) return [];
+  const no = out.no ? ' #' + out.no : '', cust = out.customerName || 'زبون', L = [];
+  if (!cur && !out.void) L.push({title: '🧾 فاتورة جديدة' + no, body: `${who} باع لـ ${cust} — ${TYPE[out.type] || ''} — ${money(out.total)} د.ع`, kind: 'sale'});
+  if (cur) {
+    const ids = new Set((cur.payments || []).map(p => p && p.id)), add = (out.payments || []).filter(p => p && !ids.has(p.id));
+    if (add.length) L.push({title: '💵 دفعة واصلة', body: `${who} سجّل ${money(add.reduce((t, p) => t + (+p.amount || 0), 0))} د.ع من ${cust} (فاتورة${no})`, kind: 'pay'});
+    const rids = new Set((cur.returns || []).map(r => r && r.id)), radd = (out.returns || []).filter(r => r && !rids.has(r.id) && !r.void);
+    if (radd.length) L.push({title: '↩️ إرجاع' + no, body: `${who} رجّع منتجات بقيمة ${money(radd.reduce((t, r) => t + (+r.amount || 0), 0))} د.ع — ${cust}`, kind: 'ret'});
+    if (out.void && !cur.void) L.push({title: '⛔ انلغت فاتورة' + no, body: `${who} لغى فاتورة ${cust}${out.voidReason ? ' — ' + out.voidReason : ''}`, kind: 'void'});
+  }
+  return L;
+}
+
 /* ======================= the list of shops (and the owner of the app) ======================= */
 export class Directory extends DurableObject {
   constructor(ctx, env) {
@@ -32,8 +75,18 @@ export class Directory extends DurableObject {
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS admin (id INTEGER PRIMARY KEY, hash TEXT, salt TEXT, secret TEXT, fails INTEGER DEFAULT 0, lockUntil INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS phones (phone TEXT PRIMARY KEY, shop TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS shops (id TEXT PRIMARY KEY, name TEXT, owner TEXT, ownerName TEXT, createdAt INTEGER, disabled INTEGER DEFAULT 0, note TEXT);`);
+        CREATE TABLE IF NOT EXISTS shops (id TEXT PRIMARY KEY, name TEXT, owner TEXT, ownerName TEXT, createdAt INTEGER, disabled INTEGER DEFAULT 0, note TEXT);
+        CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);`);
     });
+  }
+  // the app's own notification keys (made once)
+  async vapid(origin) {
+    const row = this.sql.exec("SELECT v FROM kv WHERE k = 'vapid'").toArray()[0];
+    if (row) return JSON.parse(row.v);
+    const kp = await crypto.subtle.generateKey({name: 'ECDSA', namedCurve: 'P-256'}, true, ['sign', 'verify']);
+    const v = {pub: b64u(await crypto.subtle.exportKey('raw', kp.publicKey)), priv: await crypto.subtle.exportKey('jwk', kp.privateKey), sender: origin && /^https:/.test(origin) ? origin : 'mailto:alerts@dukkan.app'};
+    this.sql.exec("INSERT INTO kv (k, v) VALUES ('vapid', ?)", JSON.stringify(v));
+    return v;
   }
   adminRow() { return this.sql.exec('SELECT * FROM admin WHERE id = 1').toArray()[0] || null; }
   async adminState() { return {setup: !!this.adminRow()}; }
@@ -119,7 +172,9 @@ export class Shop extends DurableObject {
       this.sql.exec(`CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
         CREATE TABLE IF NOT EXISTS members (phone TEXT PRIMARY KEY, name TEXT, role TEXT, hash TEXT, salt TEXT, active INTEGER DEFAULT 1, ver INTEGER DEFAULT 1, fails INTEGER DEFAULT 0, lockUntil INTEGER DEFAULT 0, createdAt INTEGER, lastSeen INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS docs (c TEXT NOT NULL, i TEXT NOT NULL, d TEXT, s INTEGER NOT NULL, del INTEGER DEFAULT 0, by TEXT, PRIMARY KEY (c, i));
-        CREATE INDEX IF NOT EXISTS docs_s ON docs (s);`);
+        CREATE INDEX IF NOT EXISTS docs_s ON docs (s);
+        CREATE TABLE IF NOT EXISTS subs (endpoint TEXT PRIMARY KEY, phone TEXT, p256dh TEXT, auth TEXT, ua TEXT, createdAt INTEGER);
+        CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, by TEXT, title TEXT, body TEXT, kind TEXT);`);
     });
   }
   kv(k, v) { if (v === undefined) return this.sql.exec('SELECT v FROM kv WHERE k = ?', k).toArray()[0]?.v ?? null; this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, String(v)); return v; }
@@ -185,7 +240,7 @@ export class Shop extends DurableObject {
   async push(token, ops) {
     const m = await this.need(token);
     if (!Array.isArray(ops) || ops.length > 500) throw new Fail('bad', 'طلب غلط');
-    let seq = +this.kv('seq'); const done = [];
+    let seq = +this.kv('seq'); const done = [], news = [], who = m.name || m.phone;
     for (const op of ops) {
       const c = clean(op.c, 40), i = clean(op.i, 120);
       if (!/^[\w-]+$/.test(c) || !i) { done.push({k: op.k, ok: false}); continue; }
@@ -212,12 +267,71 @@ export class Shop extends DurableObject {
       }
       const txt = out ? JSON.stringify(out) : 'null';
       if (txt.length > 1900000) { done.push({k: op.k, ok: false, err: 'big'}); continue; }
+      if (c === 'invoices') news.push(...invoiceNews(cur, out, who));
       seq++;
       this.sql.exec('INSERT INTO docs (c, i, d, s, del, by) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(c, i) DO UPDATE SET d = excluded.d, s = excluded.s, del = excluded.del, by = excluded.by', c, i, txt, seq, out ? 0 : 1, m.phone);
       done.push({k: op.k, ok: true, s: seq, d: out});
     }
     this.kv('seq', seq);
+    this.broadcast({t: 'c', seq, by: m.phone});   // other open devices fetch the change at once
+    if (news.length) this.ctx.waitUntil(this.announce(news, m.phone));
     return {done, seq};
+  }
+  /* --- live connection (WebSocket): changes and news reach open devices within a second --- */
+  async fetch(req) {
+    if (req.headers.get('upgrade') !== 'websocket') return new Response('no', {status: 400});
+    const pair = new WebSocketPair(), [client, server] = Object.values(pair);
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment({phone: null, at: Date.now()});
+    return new Response(null, {status: 101, webSocket: client});
+  }
+  async webSocketMessage(ws, msg) {
+    if (msg === 'ping') { ws.send('pong'); return; }
+    let j = null; try { j = JSON.parse(msg); } catch (e) { return; }
+    if (j && j.auth) {
+      let m = null; try { m = await this.auth(j.auth); } catch (e) {}
+      if (!m) { ws.send(JSON.stringify({t: 'bye'})); ws.close(4001, 'auth'); return; }
+      ws.serializeAttachment({phone: m.phone, at: Date.now()});
+      ws.send(JSON.stringify({t: 'ok', seq: +this.kv('seq')}));
+    }
+  }
+  async webSocketClose(ws, code) { try { ws.close(code === 1006 ? 1000 : code, 'bye'); } catch (e) {} }
+  async webSocketError(ws) { try { ws.close(1011, 'error'); } catch (e) {} }
+  broadcast(o) {
+    const txt = JSON.stringify(o);
+    for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.phone) { try { ws.send(txt); } catch (e) {} } }
+  }
+  async announce(news, by) {
+    const ids = [];
+    for (const n of news) { this.sql.exec('INSERT INTO events (at, by, title, body, kind) VALUES (?, ?, ?, ?, ?)', Date.now(), by, n.title, n.body, n.kind); ids.push(this.sql.exec('SELECT last_insert_rowid() AS id').one().id); }
+    this.sql.exec('DELETE FROM events WHERE id <= (SELECT MAX(id) - 500 FROM events)');
+    news.forEach((n, k) => this.broadcast({t: 'ev', id: ids[k], by, title: n.title, body: n.body, kind: n.kind}));
+    const subs = this.sql.exec('SELECT * FROM subs WHERE phone != ?', by).toArray();
+    if (!subs.length) return;
+    let vapid; try { vapid = await this.env.DIR.get(this.env.DIR.idFromName('dir')).vapid(); } catch (e) { return; }
+    const one = news.length === 1 ? news[0] : {title: `${news.length} حركات جديدة`, body: news.map(n => n.title).join(' · ')};
+    const payload = JSON.stringify({title: one.title, body: one.body, tag: 'dk-' + (ids[ids.length - 1] || Date.now()), url: './#invoices'});
+    await Promise.allSettled(subs.map(async s => {
+      const r = await webPush(s, payload, vapid).catch(() => null);
+      if (r && (r.status === 404 || r.status === 410)) this.sql.exec('DELETE FROM subs WHERE endpoint = ?', s.endpoint);   // that phone switched notifications off
+    }));
+  }
+  async subscribe(token, sub, ua) {
+    const m = await this.need(token);
+    if (!sub || !/^https:\/\//.test(sub.endpoint || '') || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) throw new Fail('bad', 'اشتراك الإشعارات غلط');
+    this.sql.exec('INSERT INTO subs (endpoint, phone, p256dh, auth, ua, createdAt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET phone = excluded.phone, p256dh = excluded.p256dh, auth = excluded.auth, ua = excluded.ua',
+      String(sub.endpoint).slice(0, 1000), m.phone, String(sub.keys.p256dh).slice(0, 200), String(sub.keys.auth).slice(0, 100), clean(ua, 200), Date.now());
+    return true;
+  }
+  async unsubscribe(token, endpoint) { await this.need(token); this.sql.exec('DELETE FROM subs WHERE endpoint = ?', String(endpoint || '')); return true; }
+  async events(token, since) {
+    const m = await this.need(token);
+    return this.sql.exec('SELECT id, at, by, title, body, kind FROM events WHERE id > ? ORDER BY id DESC LIMIT 50', Math.max(0, +since || 0)).toArray().reverse().map(e => ({...e, mine: e.by === m.phone}));
+  }
+  async testNotify(token) {
+    const m = await this.need(token);
+    await this.announce([{title: '🔔 تجربة الإشعارات', body: `${m.name || m.phone}: الإشعارات شغّالة على أجهزة المحل ✓`, kind: 'test'}], '-');
+    return true;
   }
   /* --- people --- */
   async members(token) { const m = await this.need(token); const all = this.sql.exec('SELECT * FROM members ORDER BY createdAt').toArray(); return m.role === 'owner' ? all.map(x => this.pub(x)) : all.map(x => ({phone: x.phone, name: x.name, role: x.role})); }
@@ -289,6 +403,11 @@ async function api(req, env, url) {
   if (p === '/doc') return shopFromToken(env, t).getDoc(t, q('c'), q('i'));
   if (p === '/query') return shopFromToken(env, t).query(t, q('c'), q('f'), JSON.parse(q('v') || 'null'));
   if (p === '/members') return shopFromToken(env, t).members(t);
+  if (p === '/push/key') return {key: (await dir.vapid(url.origin)).pub};
+  if (p === '/push/sub' && req.method === 'POST') return shopFromToken(env, t).subscribe(t, body.sub, req.headers.get('user-agent'));
+  if (p === '/push/unsub' && req.method === 'POST') return shopFromToken(env, t).unsubscribe(t, body.endpoint);
+  if (p === '/push/test' && req.method === 'POST') return shopFromToken(env, t).testNotify(t);
+  if (p === '/events') return shopFromToken(env, t).events(t, q('since'));
   if (p === '/members/add' && req.method === 'POST') return shopFromToken(env, t).addMember(t, body);
   if (p === '/members/set' && req.method === 'POST') return shopFromToken(env, t).setMember(t, body.phone, body);
   if (p === '/members/remove' && req.method === 'POST') return shopFromToken(env, t).removeMember(t, body.phone);
@@ -316,6 +435,11 @@ export default {
     const url = new URL(req.url);
     if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(req);
     if (req.method === 'OPTIONS') return new Response(null, {status: 204, headers: CORS});
+    if (url.pathname === '/api/live') {   // the live line: /api/live?shop=<id>, then the device sends its login inside
+      const id = url.searchParams.get('shop') || '';
+      if (!/^[0-9a-f]{16}$/.test(id) || req.headers.get('upgrade') !== 'websocket') return new Response('no', {status: 400});
+      return shopOf(env, id).fetch(req);
+    }
     try { return J(await api(req, env, url)); }
     catch (e) {
       const f = readFail(e);

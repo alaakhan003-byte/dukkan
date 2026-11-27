@@ -26,3 +26,21 @@ self.addEventListener('fetch', e => {
     return res;
   }).catch(() => caches.match(req.mode === 'navigate' ? './index.html' : req, {ignoreSearch: true}).then(r => r || caches.match('./index.html'))));
 });
+
+/* real notifications: they arrive even when the app is closed and the phone is locked */
+self.addEventListener('push', e => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch (x) { d = {title: 'دكّان', body: e.data ? e.data.text() : ''}; }
+  e.waitUntil(self.registration.showNotification(d.title || 'دكّان', {
+    body: d.body || '', icon: './icons/icon-192.png', badge: './icons/icon-192.png', tag: d.tag || undefined,
+    data: {url: d.url || './'}, dir: 'rtl', lang: 'ar', timestamp: Date.now()
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = new URL((e.notification.data && e.notification.data.url) || './', self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({type: 'window', includeUncontrolled: true}).then(list => {
+    for (const c of list) if (c.url.startsWith(self.registration.scope)) { c.focus(); try { c.navigate(url); } catch (x) {} return; }
+    return self.clients.openWindow(url);
+  }));
+});

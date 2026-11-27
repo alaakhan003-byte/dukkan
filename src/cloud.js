@@ -172,12 +172,43 @@
     if (this.lastN && !n && !this.offline) say('انرفعت كل الحركات للسحابة ✓');
     this.lastN = n;
   };
-  Cloud.prototype.start = function () {
+  // the live line: a change on another device arrives within a second (and its news as a note on the side)
+  Cloud.prototype.live = function () {
     var self = this;
+    if (self.dead || self.wsDead || !('WebSocket' in window)) return;
+    if (self.ws && (self.ws.readyState === 0 || self.ws.readyState === 1)) return;
+    var base = API.indexOf('http') === 0 ? API.replace(/^http/, 'ws') : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + API, ws;
+    try { ws = new WebSocket(base + '/live?shop=' + encodeURIComponent(self.s.shop.id)); } catch (e) { return; }
+    self.ws = ws;
+    ws.onopen = function () { ws.send(JSON.stringify({auth: self.s.token})); };
+    ws.onmessage = function (e) {
+      if (e.data === 'pong') return;
+      var m; try { m = JSON.parse(e.data); } catch (x) { return; }
+      if (m.t === 'ok') { self.liveOk = true; self.wsTry = 0; if (m.seq > self.cursor) self.pull(); }
+      else if (m.t === 'c') { if (m.seq > self.cursor) self.pull(); }
+      else if (m.t === 'ev') { if (m.by !== self.s.user.phone) sideNote(m.title, m.body); }
+      else if (m.t === 'bye') { self.wsDead = true; self.pull(); }
+    };
+    ws.onclose = function () {
+      self.liveOk = false; self.ws = null; clearInterval(self.pingT);
+      if (self.wsDead || self.dead) return;
+      var wait = Math.min(30000, 1500 * Math.pow(2, self.wsTry || 0)); self.wsTry = (self.wsTry || 0) + 1;
+      clearTimeout(self.wsT); self.wsT = setTimeout(function () { if (document.visibilityState === 'visible' || window.APP_DESKTOP) self.live(); }, wait);
+    };
+    clearInterval(self.pingT); self.pingT = setInterval(function () { try { if (ws.readyState === 1) ws.send('ping'); } catch (e) {} }, 25000);
+  };
+  Cloud.prototype.start = function () {
+    var self = this, lastPull = 0;
     self.pull().then(function () { self.flush(); });
-    setInterval(function () { if (document.visibilityState === 'visible') { if (self.queue.length) self.flush(); else self.pull(); } }, 20000);
-    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') { self.pull(); self.flush(); } });
-    addEventListener('online', function () { self.online(true); self.flush(); self.pull(); });
+    self.live();
+    setInterval(function () {
+      if (document.visibilityState !== 'visible') return;
+      if (self.queue.length) self.flush();
+      else if (!self.liveOk || Date.now() - lastPull > 60000) { lastPull = Date.now(); self.pull(); }   // the live line does the fast part; this is the safety net
+      self.live();
+    }, 20000);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') { self.pull(); self.flush(); self.live(); } });
+    addEventListener('online', function () { self.online(true); self.flush(); self.pull(); self.wsTry = 0; self.live(); });
     addEventListener('offline', function () { self.online(false); self.status(); });
   };
   function docSnap(id, d) { var x = d == null ? null : clone(d); return {id: id, exists: x != null, data: function () { return x == null ? undefined : clone(x); }}; }
@@ -216,6 +247,58 @@
   };
   Cloud.prototype.collection = function (c) { return new Query(this, c); };
 
+  /* ---------- notes on the side (the app is open) ---------- */
+  function sideNote(title, body, actions) {
+    var box = document.getElementById('dkNt');
+    if (!box) { box = document.createElement('div'); box.id = 'dkNt'; box.setAttribute('aria-live', 'polite'); document.body.appendChild(box); }
+    var n = document.createElement('div'); n.className = 'dk-nt';
+    n.innerHTML = '<img src="icons/icon-192.png" alt=""><div><b>' + esc(title) + '</b><span>' + esc(body || '') + '</span>' + (actions ? '<p>' + actions + '</p>' : '') + '</div><button type="button" class="x" aria-label="سد">×</button>';
+    box.prepend(n);
+    while (box.children.length > 3) box.lastChild.remove();
+    var gone = function () { n.classList.add('out'); setTimeout(function () { n.remove(); }, 250); };
+    n.querySelector('.x').onclick = function (e) { e.stopPropagation(); gone(); };
+    if (!actions) { n.onclick = function () { gone(); try { if (location.hash !== '#invoices') location.hash = 'invoices'; } catch (e) {} }; setTimeout(gone, 7000); }
+    try { navigator.vibrate && navigator.vibrate(40); } catch (e) {}
+    return n;
+  }
+  window.__dkNote = sideNote;
+
+  /* ---------- real notifications on this device ---------- */
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  var canPush = function () { return !window.APP_DESKTOP && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext; };
+  var u8 = function (s) { var t = String(s).replace(/-/g, '+').replace(/_/g, '/'); while (t.length % 4) t += '='; return Uint8Array.from(atob(t), function (c) { return c.charCodeAt(0); }); };
+  function pushSub() { return navigator.serviceWorker.ready.then(function (r) { return r.pushManager.getSubscription(); }); }
+  function pushOn() {
+    return Notification.requestPermission().then(function (p) {
+      if (p !== 'granted') { var e = new Error(isIOS ? 'الإشعارات مرفوضة. فعّلها من إعدادات الآيفون ← الإشعارات ← دكّان' : 'الإشعارات مرفوضة. فعّلها من إعدادات المتصفح'); throw e; }
+      return Promise.all([navigator.serviceWorker.ready, call('/push/key')]);
+    }).then(function (r) {
+      return r[0].pushManager.getSubscription().then(function (old) { return old || r[0].pushManager.subscribe({userVisibleOnly: true, applicationServerKey: u8(r[1].key)}); });
+    }).then(function (sub) { return call('/push/sub', {sub: sub.toJSON()}); }).then(function () { LS.set('dk:push', '1'); });
+  }
+  function pushOff() {
+    return pushSub().then(function (sub) { if (!sub) return; var ep = sub.endpoint; return sub.unsubscribe().then(function () { return call('/push/unsub', {endpoint: ep}).catch(function () {}); }); }).then(function () { LS.del('dk:push'); });
+  }
+  function pushState() {
+    if (window.APP_DESKTOP) return Promise.resolve('desktop');
+    if (!canPush()) return Promise.resolve(isIOS && !standalone ? 'ios-install' : 'none');
+    if (Notification.permission === 'denied') return Promise.resolve('denied');
+    return pushSub().then(function (s) { return s ? 'on' : 'off'; }).catch(function () { return 'off'; });
+  }
+  // after logging in: ask once (needs a tap on iPhone), and quietly renew if it was allowed before
+  function pushInvite() {
+    pushState().then(function (st) {
+      if (st === 'off' && Notification.permission === 'granted') { pushOn().catch(function () {}); return; }
+      if (st !== 'off' || LS.get('dk:pushAsked')) return;
+      setTimeout(function () {
+        var n = sideNote('🔔 تريد يوصلك إشعار؟', 'لكل بيعة ودفعة وإرجاع بالمحل — حتى لو التطبيق مسدود.', '<button type="button" class="y">فعّل الإشعارات</button><button type="button" class="n">بعدين</button>');
+        n.querySelector('.y').onclick = function () { LS.set('dk:pushAsked', '1'); n.remove(); pushOn().then(function () { say('انفعلت الإشعارات ✓'); }, function (e) { say(e.message, false); }); };
+        n.querySelector('.n').onclick = function () { LS.set('dk:pushAsked', '1'); n.remove(); };
+      }, 2500);
+    });
+  }
+
   /* ---------- who is using it ---------- */
   var people = {}; try { people = JSON.parse(LS.get('dk:people') || '{}'); } catch (e) {}
   function loadPeople() { return call('/members').then(function (L) { people = {}; L.forEach(function (m) { people[m.phone] = {name: m.name, role: m.role}; }); LS.set('dk:people', JSON.stringify(people)); return L; }); }
@@ -240,10 +323,12 @@
   function startCloud() {
     cloud = new Cloud(sess);
     window.__dkCloud = cloud;
-    cloud.ready.then(function () { resolveDb(cloud); resolveUser(userApi()); cloud.start(); loadPeople().catch(function () {}); offerUpload(); })
+    cloud.ready.then(function () { resolveDb(cloud); resolveUser(userApi()); cloud.start(); loadPeople().catch(function () {}); offerUpload(); pushInvite(); desktopSession(); })
       .catch(function () { resolveDb(null); resolveUser(null); say('ما گدرت أفتح التخزين على هذا الجهاز', false); });
   }
   function startLocal() { resolveDb(null); resolveUser(null); }
+  // the Windows program keeps its own live line (it notifies even with the window closed)
+  function desktopSession() { try { if (window.dukkanDesktop && window.dukkanDesktop.session) window.dukkanDesktop.session(sess ? {token: sess.token, shop: sess.shop.id, phone: sess.user.phone, name: sess.shop.name} : null); } catch (e) {} }
 
   /* ---------- the login screen ---------- */
   var CSS = '#dkIn{position:fixed;inset:0;z-index:400;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto;background:radial-gradient(70% 55% at 85% 0%,rgba(129,140,248,.5),transparent 60%),radial-gradient(60% 50% at 0% 100%,rgba(236,72,153,.32),transparent 62%),linear-gradient(170deg,#3730A3,#1E1B4B 70%);font-family:inherit;color:#0F172A}'
@@ -291,7 +376,7 @@
         sess = {token: res.token, user: res.user, shop: res.shop};
         LS.set('dk:session', JSON.stringify(sess)); LS.del('dk:mode');
         o.remove();
-        if (again && cloud && sameShop) { cloud.s = sess; cloud.dead = false; cloud.flush(); cloud.pull(); say('رجعت لحسابك ✓'); return; }
+        if (again && cloud && sameShop) { cloud.s = sess; cloud.dead = false; cloud.wsDead = false; cloud.flush(); cloud.pull(); cloud.live(); desktopSession(); say('رجعت لحسابك ✓'); return; }
         if (again) { location.reload(); return; }
         say('أهلاً ' + (res.user.name || '') + ' — ' + res.shop.name);
         startCloud();
@@ -338,16 +423,20 @@
     return '<div class="dk-row"><span>المحل</span><b>' + esc(sess.shop.name) + '</b></div>'
       + '<div class="dk-row"><span>' + (owner ? 'صاحب المحل' : 'عامل') + '</span><b>' + esc(u.name) + ' · <span class="num">' + esc(u.phone) + '</span></b></div>'
       + '<div class="dk-note" id="dkSync"></div>'
+      + '<div class="dk-row"><span>الإشعارات على هذا الجهاز</span><b id="dkPushSt">...</b></div><div id="dkPushBox"></div>'
       + (owner ? '<button type="button" class="btn ghost dk-btn" id="dkTeam">العمال وحساباتهم</button><div id="dkTeamBox"></div>' : '')
       + '<button type="button" class="btn ghost dk-btn" id="dkOut" style="color:#BE123C">تسجيل خروج</button>';
   };
   window.__dkAccountBind = function () {
     if (!cloud) return;
     cloud.status();
+    paintPush();
     var out = document.getElementById('dkOut');
     if (out) out.onclick = function () {
       if (cloud.queue.length && !confirmOut) { confirmOut = true; out.textContent = cloud.queue.length + ' حركة ما انرفعت بعد! اضغط مرة ثانية حتى تطلع'; setTimeout(function () { confirmOut = false; out.textContent = 'تسجيل خروج'; }, 5000); return; }
-      LS.del('dk:session'); LS.del('dk:people');
+      try { if (window.dukkanDesktop && window.dukkanDesktop.session) window.dukkanDesktop.session(null); } catch (e) {}
+      if (canPush()) pushOff().catch(function () {});
+      LS.del('dk:session'); LS.del('dk:people'); LS.del('dk:pushAsked');
       try { indexedDB.deleteDatabase('dukkan-cloud-' + sess.shop.id); } catch (e) {}
       location.reload();
     };
@@ -355,6 +444,24 @@
     if (tb) tb.onclick = function () { team(document.getElementById('dkTeamBox')); };
   };
   var confirmOut = false;
+  function paintPush() {
+    var st = document.getElementById('dkPushSt'), box = document.getElementById('dkPushBox'); if (!st) return;
+    pushState().then(function (s) {
+      var T = {on: 'شغّالة ✓', off: 'مطفية', denied: 'مرفوضة', 'ios-install': 'تحتاج تثبيت', none: 'ما تنفع هنا', desktop: 'شغّالة ✓'};
+      st.textContent = T[s] || '';
+      var btn = function (id, t, cls) { return '<button type="button" class="btn ' + (cls || 'ghost') + ' dk-btn" id="' + id + '">' + t + '</button>'; };
+      box.innerHTML = s === 'off' ? btn('dkPOn', 'فعّل الإشعارات (كل بيعة ودفعة توصلك)', 'pri')
+        : s === 'on' ? btn('dkPTest', 'جرّب إشعار') + btn('dkPOff', 'أطفي الإشعارات على هذا الجهاز')
+        : s === 'desktop' ? '<div class="dk-note">توصلك جنب الساعة حتى لو نافذة دكّان مسدودة. تگدر تطفيها من أيقونة دكّان جنب الساعة.</div>' + btn('dkPTest', 'جرّب إشعار')
+        : s === 'ios-install' ? '<div class="dk-note">الآيفون يسمح بالإشعارات بس للتطبيق المثبّت: من Safari اضغط مشاركة ← إضافة إلى الشاشة الرئيسية، وافتحه من الأيقونة.</div>'
+        : s === 'denied' ? '<div class="dk-note">' + (isIOS ? 'فعّلها من إعدادات الآيفون ← الإشعارات ← دكّان.' : 'فعّلها من إعدادات المتصفح (القفل جنب الرابط ← الإشعارات ← سماح).') + '</div>'
+        : '<div class="dk-note">هذا المتصفح ما يدعم الإشعارات. استعمل Chrome أو التطبيق المثبّت.</div>';
+      var on = document.getElementById('dkPOn'), off = document.getElementById('dkPOff'), test = document.getElementById('dkPTest');
+      if (on) on.onclick = function () { on.disabled = true; pushOn().then(function () { say('انفعلت الإشعارات ✓'); paintPush(); }, function (e) { say(e.message, false); paintPush(); }); };
+      if (off) off.onclick = function () { pushOff().then(function () { say('انطفت الإشعارات على هذا الجهاز'); paintPush(); }); };
+      if (test) test.onclick = function () { test.disabled = true; call('/push/test', {}).then(function () { say('انرسل إشعار تجربة لكل أجهزة المحل'); }, function (e) { say(e.message, false); }).finally(function () { test.disabled = false; }); };
+    });
+  }
   function team(box) {
     box.innerHTML = '<div class="dk-note">جاري التحميل...</div>';
     loadPeople().then(function (L) {
@@ -392,6 +499,11 @@
     var st = document.createElement('style');
     st.textContent = '.dk-team{display:grid;gap:8px}.dk-m{background:#fff;border-radius:12px;padding:10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}.dk-m>div:first-child{flex:1 1 160px}.dk-m small{display:block;color:#64748B;font-size:12px}'
       + '.dk-m button,.dk-pw button{border:0;border-radius:10px;background:#EEF2FF;color:#3730A3;font:inherit;font-size:13px;font-weight:600;min-height:36px;padding:0 10px;cursor:pointer}.dk-m button.r{background:#FFF1F2;color:#BE123C}'
+      + '#dkNt{position:fixed;z-index:300;top:calc(10px + env(safe-area-inset-top));right:10px;left:10px;display:grid;gap:8px;pointer-events:none}@media(min-width:700px){#dkNt{left:auto;width:360px}}'
+      + '.dk-nt{pointer-events:auto;display:flex;gap:10px;align-items:flex-start;background:#fff;color:#0F172A;border-radius:16px;padding:12px;box-shadow:0 16px 40px -14px rgba(15,23,42,.45);border:1px solid #E2E8F0;cursor:pointer;animation:dkIn .25s ease;transition:opacity .25s,transform .25s}'
+      + '.dk-nt.out{opacity:0;transform:translateY(-8px)}.dk-nt img{width:36px;height:36px;border-radius:10px;flex:none}.dk-nt>div{flex:1;min-width:0}.dk-nt b{display:block;font-size:14.5px}.dk-nt span{display:block;font-size:13.5px;color:#475569;line-height:1.55}'
+      + '.dk-nt .x{border:0;background:none;font-size:20px;line-height:1;color:#94A3B8;cursor:pointer;padding:0 4px}.dk-nt p{display:flex;gap:6px;margin:8px 0 0}.dk-nt p button{border:0;border-radius:10px;min-height:38px;padding:0 12px;font:inherit;font-size:13.5px;font-weight:700;cursor:pointer}.dk-nt p .y{background:#4338CA;color:#fff}.dk-nt p .n{background:#EEF2FF;color:#3730A3}'
+      + '@keyframes dkIn{from{opacity:0;transform:translateY(-10px)}}@media(prefers-reduced-motion:reduce){.dk-nt{animation:none}}'
       + '.dk-pw{display:flex;gap:6px;flex:1 1 100%}.dk-pw input,.dk-add input{flex:1;min-height:42px;border:1.5px solid #E2E8F0;border-radius:11px;padding:0 10px;font:inherit;font-size:16px}.dk-add{display:grid;gap:8px;margin-top:10px}.dk-add input.l{direction:ltr;text-align:right}.dk-er{color:#BE123C;font-size:13px;font-weight:600}';
     document.head.appendChild(st);
     // decide: an account, "trying without one", or the login screen

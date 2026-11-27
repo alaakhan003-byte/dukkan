@@ -5,5 +5,6 @@ contextBridge.exposeInMainWorld('dukkanDesktop', {
   onUpdate: cb => { ipcRenderer.on('dk:update', (e, s) => cb(s)); ipcRenderer.send('dk:ready'); },
   install: () => ipcRenderer.send('dk:install'),
   openDownload: () => ipcRenderer.send('dk:download'),
-  check: () => ipcRenderer.send('dk:check')
+  check: () => ipcRenderer.send('dk:check'),
+  session: s => ipcRenderer.send('dk:session', s || null)
 });
