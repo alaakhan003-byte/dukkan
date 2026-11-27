@@ -83,6 +83,35 @@ function invoiceNews(cur, out, who) {
   return L;
 }
 
+/* ---------- shops on their own Firebase: check that a login really came from Google ---------- */
+const dec = new TextDecoder();
+let GKEYS = null, GKEYS_AT = 0;
+async function googleKeys(env, fresh) {
+  if (env.FB_JWKS_TEST) return JSON.parse(env.FB_JWKS_TEST).keys;   // local tests only
+  if (GKEYS && !fresh && Date.now() - GKEYS_AT < 3600000) return GKEYS;
+  const r = await fetch('https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com');
+  if (!r.ok) throw new Fail('google', 'ما گدرت أتأكد من الدخول هسه. جرّب بعد شوية', 503);
+  GKEYS = (await r.json()).keys; GKEYS_AT = Date.now(); return GKEYS;
+}
+// a Firebase login card (ID token): signed by Google, for one Firebase project (aud) and one person (sub)
+async function verifyIdToken(tok, env) {
+  const bad = () => new Fail('auth', 'لازم تسجل دخول مرة ثانية', 401);
+  const [h, p, sg] = String(tok || '').split('.'); if (!sg) throw bad();
+  let head, body; try { head = JSON.parse(dec.decode(ub64(h))); body = JSON.parse(dec.decode(ub64(p))); } catch (e) { throw bad(); }
+  if (head.alg !== 'RS256' || !head.kid) throw bad();
+  let jwk = (await googleKeys(env)).find(k => k.kid === head.kid);
+  if (!jwk) jwk = (await googleKeys(env, true)).find(k => k.kid === head.kid);
+  if (!jwk) throw bad();
+  const key = await crypto.subtle.importKey('jwk', {kty: jwk.kty, n: jwk.n, e: jwk.e, alg: 'RS256', ext: true}, {name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256'}, false, ['verify']);
+  if (!(await crypto.subtle.verify('RSASSA-PKCS1-v1_5', key, ub64(sg), enc.encode(h + '.' + p)))) throw bad();
+  const now = Date.now() / 1000;
+  if (!(body.exp > now - 30) || !(body.iat < now + 300) || !/^[a-z0-9-]{4,40}$/.test(String(body.aud || '')) || body.iss !== 'https://securetoken.google.com/' + body.aud || !/^[\w-]{6,128}$/.test(String(body.sub || ''))) throw bad();
+  return {pid: body.aud, uid: body.sub};
+}
+const DAY = 86400000;
+const CODE_CH = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const newCode = () => { const r = crypto.getRandomValues(new Uint8Array(8)); let s = ''; for (let i = 0; i < 8; i++) s += CODE_CH[r[i] % CODE_CH.length]; return 'DK-' + s.slice(0, 4) + '-' + s.slice(4); };
+
 /* ======================= the list of shops (and the owner of the app) ======================= */
 export class Directory extends DurableObject {
   constructor(ctx, env) {
@@ -93,8 +122,62 @@ export class Directory extends DurableObject {
         CREATE TABLE IF NOT EXISTS phones (phone TEXT PRIMARY KEY, shop TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS shops (id TEXT PRIMARY KEY, name TEXT, owner TEXT, ownerName TEXT, createdAt INTEGER, disabled INTEGER DEFAULT 0, note TEXT);
         CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
-        CREATE TABLE IF NOT EXISTS tries (k TEXT PRIMARY KEY, fails INTEGER DEFAULT 0, lockUntil INTEGER DEFAULT 0, at INTEGER DEFAULT 0);`);
+        CREATE TABLE IF NOT EXISTS tries (k TEXT PRIMARY KEY, fails INTEGER DEFAULT 0, lockUntil INTEGER DEFAULT 0, at INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS projects (pid TEXT PRIMARY KEY, name TEXT, phone TEXT, ownerUid TEXT, ownerName TEXT, firstSeen INTEGER, trialEnd INTEGER, state TEXT DEFAULT 'trial', lastSeen INTEGER, note TEXT, people INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS codes (code TEXT PRIMARY KEY, createdAt INTEGER, note TEXT, usedBy TEXT, usedAt INTEGER);`);
     });
+  }
+  /* --- shops on their own Firebase: free trial, then the app's owner turns them on for good --- */
+  setting(k, v) { if (v === undefined) return this.sql.exec('SELECT v FROM kv WHERE k = ?', 'set:' + k).toArray()[0]?.v ?? null; this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', 'set:' + k, String(v)); return v; }
+  trialDays() { const n = +this.setting('trialDays'); return n >= 1 && n <= 3650 ? n : 90; }
+  info() { return {support: this.setting('support') || '', trialDays: this.trialDays()}; }
+  project(pid) { return this.sql.exec('SELECT * FROM projects WHERE pid = ?', pid).toArray()[0] || null; }
+  licOf(pid) {
+    const p = this.project(pid), now = Date.now(); if (!p) return {state: 'none', support: this.setting('support') || ''};
+    const state = p.state === 'active' ? 'active' : p.state === 'stopped' ? 'stopped' : now < p.trialEnd ? 'trial' : 'expired';
+    return {state, trialEnd: p.trialEnd, days: Math.max(0, Math.ceil((p.trialEnd - now) / DAY)), support: this.setting('support') || '', checkedAt: now};
+  }
+  async hello({pid, uid, role, shop, phone, name}) {
+    const now = Date.now(), p = this.project(pid); phone = normPhone(phone);
+    if (!p) {
+      let end = now + this.trialDays() * DAY;
+      // the same shop owner making a second Firebase project doesn't get a second free trial
+      const prior = okPhone(phone) ? this.sql.exec('SELECT MIN(trialEnd) AS e FROM projects WHERE phone = ?', phone).toArray()[0]?.e : null;
+      if (prior) end = Math.min(end, prior);
+      this.sql.exec('INSERT INTO projects (pid, name, phone, ownerUid, ownerName, firstSeen, trialEnd, state, lastSeen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', pid, clean(shop), okPhone(phone) ? phone : '', role === 'owner' ? uid : null, role === 'owner' ? clean(name) : '', now, end, 'trial', now);
+    } else {
+      this.sql.exec('UPDATE projects SET lastSeen = ? WHERE pid = ?', now, pid);
+      if (role === 'owner' && !p.ownerUid) this.sql.exec('UPDATE projects SET ownerUid = ? WHERE pid = ?', uid, pid);
+      if (role === 'owner' && (!p.ownerUid || p.ownerUid === uid)) { if (clean(shop)) this.sql.exec('UPDATE projects SET name = ? WHERE pid = ?', clean(shop), pid); if (clean(name)) this.sql.exec('UPDATE projects SET ownerName = ? WHERE pid = ?', clean(name), pid); if (okPhone(phone) && !p.phone) this.sql.exec('UPDATE projects SET phone = ? WHERE pid = ?', phone, pid); }
+    }
+    return this.licOf(pid);
+  }
+  isOwner(pid, uid) { const p = this.project(pid); return !!(p && p.ownerUid && p.ownerUid === uid); }
+  async seen(pid, people) { this.sql.exec('UPDATE projects SET lastSeen = ?, people = ? WHERE pid = ?', Date.now(), Math.max(0, Math.min(999, +people || 0)), pid); return true; }
+  async activate(pid, code) {
+    code = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); code = code.length === 10 && code.startsWith('DK') ? 'DK-' + code.slice(2, 6) + '-' + code.slice(6) : '';
+    const c = code ? this.sql.exec('SELECT * FROM codes WHERE code = ?', code).toArray()[0] : null;
+    if (!c) throw new Fail('code', 'الكود غلط. تأكد منه أو تواصل ويانا', 404);
+    if (c.usedBy && c.usedBy !== pid) throw new Fail('used', 'هذا الكود مستعمل لمحل ثاني', 409);
+    if (!this.project(pid)) throw new Fail('noshop', 'سجّل دخول أول مرة وبعدين فعّل', 404);
+    this.sql.exec('UPDATE codes SET usedBy = ?, usedAt = ? WHERE code = ?', pid, Date.now(), code);
+    this.sql.exec("UPDATE projects SET state = 'active' WHERE pid = ?", pid);
+    return this.licOf(pid);
+  }
+  async listProjects() { const now = Date.now(); return this.sql.exec('SELECT * FROM projects ORDER BY firstSeen DESC').toArray().map(p => ({...p, lic: this.licOf(p.pid)})); }
+  async setProject(pid, patch) {
+    const p = this.project(pid); if (!p) throw new Fail('noshop', 'المحل مو موجود', 404);
+    if (['trial', 'active', 'stopped'].includes(patch.state)) this.sql.exec('UPDATE projects SET state = ? WHERE pid = ?', patch.state, pid);
+    if (patch.addDays) { const d = Math.max(-3650, Math.min(3650, Math.round(+patch.addDays) || 0)); this.sql.exec("UPDATE projects SET trialEnd = MAX(?, trialEnd) + ?, state = CASE WHEN state = 'stopped' THEN state ELSE 'trial' END WHERE pid = ? AND state != 'active'", Date.now(), d * DAY, pid); }
+    if (patch.note != null) this.sql.exec('UPDATE projects SET note = ? WHERE pid = ?', clean(patch.note, 300), pid);
+    return {...this.project(pid), lic: this.licOf(pid)};
+  }
+  async addCode(note) { let code; do { code = newCode(); } while (this.sql.exec('SELECT 1 FROM codes WHERE code = ?', code).toArray().length); this.sql.exec('INSERT INTO codes (code, createdAt, note) VALUES (?, ?, ?)', code, Date.now(), clean(note, 120)); return {code}; }
+  async listCodes() { return this.sql.exec('SELECT c.*, p.name AS shop FROM codes c LEFT JOIN projects p ON p.pid = c.usedBy ORDER BY c.createdAt DESC LIMIT 300').toArray(); }
+  async setSettings(patch) {
+    if (patch.trialDays != null) { const n = Math.round(+patch.trialDays); if (!(n >= 1 && n <= 3650)) throw new Fail('days', 'أيام التجربة لازم بين 1 و 3650'); this.setting('trialDays', n); }
+    if (patch.support != null) this.setting('support', clean(patch.support, 200));
+    return this.info();
   }
   // the app's own notification keys (made once)
   async vapid(origin) {
@@ -558,12 +641,139 @@ export class Shop extends DurableObject {
   }
 }
 
+/* ======================= one Firebase shop's notifications (its data stays in its own Firebase) ======================= */
+// Only short news passes here ("فاتورة جديدة #12 — 250,000"): kept for a while so a phone that was off can catch up, then dropped.
+export class Relay extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.sql = ctx.storage.sql;
+    ctx.blockConcurrencyWhile(async () => {
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS subs (endpoint TEXT PRIMARY KEY, phone TEXT, p256dh TEXT, auth TEXT, ua TEXT, createdAt INTEGER);
+        CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER, by TEXT, title TEXT, body TEXT, kind TEXT, owner INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS blocked (uid TEXT PRIMARY KEY, at INTEGER);
+        CREATE TABLE IF NOT EXISTS sends (uid TEXT, at INTEGER);`);
+    });
+  }
+  kv(k, v) { if (v === undefined) return this.sql.exec('SELECT v FROM kv WHERE k = ?', k).toArray()[0]?.v ?? null; this.sql.exec('INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v', k, String(v)); return v; }
+  secret() { return this.kv('secret') || this.kv('secret', rand(32)); }
+  // after Google said who this is, the shop's devices get a long card for this line (so the Windows program works with its window closed)
+  async issue(pid, uid, owner) {
+    if (!this.kv('pid')) this.kv('pid', pid);
+    if (this.kv('pid') !== pid) throw new Fail('auth', 'لازم تسجل دخول مرة ثانية', 401);
+    if (this.sql.exec('SELECT 1 FROM blocked WHERE uid = ?', uid).toArray().length) throw new Fail('inactive', 'حسابك موقوف. راجع صاحب المحل', 403);
+    if (owner) this.kv('owner', uid);
+    const exp = Date.now() + 365 * DAY;
+    return `r.${pid}.${uid}.${exp}.${await hmac(this.secret(), `r.${pid}.${uid}.${exp}`)}`;
+  }
+  async auth(token) {
+    const [r, pid, uid, exp, sig] = String(token || '').split('.');
+    if (r !== 'r' || !sig || pid !== this.kv('pid') || !(+exp > Date.now())) return null;
+    if (!same(sig, await hmac(this.secret(), `r.${pid}.${uid}.${exp}`))) return null;
+    if (this.sql.exec('SELECT 1 FROM blocked WHERE uid = ?', uid).toArray().length) throw new Fail('inactive', 'حسابك موقوف. راجع صاحب المحل', 403);
+    return {phone: uid, uid, pid, owner: this.kv('owner') === uid};
+  }
+  async need(token) { const m = await this.auth(token); if (!m) throw new Fail('auth', 'لازم تسجل دخول مرة ثانية', 401); return m; }
+  async who(token) { return this.need(token); }
+  rate(uid, n, ms) {
+    const now = Date.now(); this.sql.exec('DELETE FROM sends WHERE at < ?', now - 3600000);
+    if (this.sql.exec('SELECT COUNT(*) AS n FROM sends WHERE uid = ? AND at > ?', uid, now - ms).one().n >= n) throw new Fail('wait', 'إشعارات هواية بوقت قصير. انتظر شوية', 429);
+    this.sql.exec('INSERT INTO sends (uid, at) VALUES (?, ?)', uid, now);
+  }
+  async news(token, list, ownerOnly) {
+    const m = await this.need(token);
+    if (!Array.isArray(list) || !list.length) return true;
+    this.rate(m.uid, 240, 3600000);
+    const L = list.slice(0, 10).map(n => ({title: clean(n && n.title, 120), body: clean(n && n.body, 300), kind: clean(n && n.kind, 20)})).filter(n => n.title);
+    if (L.length) await this.announce(L, m.uid, !!ownerOnly);
+    return true;
+  }
+  async announce(news, by, onlyOwner) {
+    const ids = [];
+    for (const n of news) { this.sql.exec('INSERT INTO events (at, by, title, body, kind, owner) VALUES (?, ?, ?, ?, ?, ?)', Date.now(), by, n.title, n.body, n.kind, onlyOwner ? 1 : 0); ids.push(this.sql.exec('SELECT last_insert_rowid() AS id').one().id); }
+    this.sql.exec('DELETE FROM events WHERE id <= (SELECT MAX(id) - 500 FROM events) OR at < ?', Date.now() - 30 * DAY);
+    const owner = this.kv('owner');
+    news.forEach((n, k) => this.broadcast({t: 'ev', id: ids[k], by, title: n.title, body: n.body, kind: n.kind}, onlyOwner ? owner : null));
+    const subs = this.sql.exec(`SELECT * FROM subs WHERE phone != ? AND phone NOT IN (SELECT uid FROM blocked)${onlyOwner ? ' AND phone = ?' : ''}`, ...(onlyOwner ? [by, owner || '-'] : [by])).toArray();
+    if (!subs.length) return;
+    let vapid; try { vapid = await this.env.DIR.get(this.env.DIR.idFromName('dir')).vapid(); } catch (e) { return; }
+    const one = news.length === 1 ? news[0] : {title: `${news.length} حركات جديدة`, body: news.map(n => n.title).join(' · ')};
+    const payload = JSON.stringify({title: one.title, body: one.body, tag: 'dk-' + (ids[ids.length - 1] || Date.now()), url: './#invoices'});
+    await Promise.allSettled(subs.map(async s => {
+      const r = await webPush(s, payload, vapid).catch(() => null);
+      if (r && (r.status === 404 || r.status === 410)) this.sql.exec('DELETE FROM subs WHERE endpoint = ?', s.endpoint);
+    }));
+  }
+  async subscribe(token, sub, ua) {
+    const m = await this.need(token);
+    if (!sub || !/^https:\/\//.test(sub.endpoint || '') || !sub.keys || !sub.keys.p256dh || !sub.keys.auth) throw new Fail('bad', 'اشتراك الإشعارات غلط');
+    this.sql.exec('INSERT INTO subs (endpoint, phone, p256dh, auth, ua, createdAt) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(endpoint) DO UPDATE SET phone = excluded.phone, p256dh = excluded.p256dh, auth = excluded.auth, ua = excluded.ua',
+      String(sub.endpoint).slice(0, 1000), m.uid, String(sub.keys.p256dh).slice(0, 200), String(sub.keys.auth).slice(0, 100), clean(ua, 200), Date.now());
+    if (this.sql.exec('SELECT COUNT(*) AS n FROM subs').one().n > 300) this.sql.exec('DELETE FROM subs WHERE endpoint IN (SELECT endpoint FROM subs ORDER BY createdAt LIMIT 50)');
+    return true;
+  }
+  async unsubscribe(token, endpoint) { await this.need(token); this.sql.exec('DELETE FROM subs WHERE endpoint = ?', String(endpoint || '')); return true; }
+  async events(token, since) {
+    const m = await this.need(token);
+    return this.sql.exec('SELECT id, at, by, title, body, kind, owner FROM events WHERE id > ? ORDER BY id DESC LIMIT 50', Math.max(0, +since || 0)).toArray().reverse()
+      .filter(e => !e.owner || m.owner).map(e => ({id: e.id, at: e.at, by: e.by, title: e.title, body: e.body, kind: e.kind, mine: e.by === m.uid}));
+  }
+  async testNotify(token) {
+    const m = await this.need(token);
+    const last = +this.kv('test:' + m.uid) || 0;
+    if (Date.now() - last < 60000) throw new Fail('wait', 'جرّبت هسه. انتظر دقيقة وجرّب مرة ثانية', 429);
+    this.kv('test:' + m.uid, Date.now());
+    await this.announce([{title: '🔔 تجربة الإشعارات', body: 'الإشعارات شغّالة على أجهزة المحل ✓', kind: 'test'}], '-');
+    return true;
+  }
+  // the shop owner stopped or removed a worker: his devices stop hearing anything at once
+  async block(token, uid, yes) {
+    const m = await this.need(token);
+    if (!m.owner) throw new Fail('owner', 'هذا الشي لصاحب المحل بس', 403);
+    uid = clean(uid, 128); if (!uid || uid === m.uid) throw new Fail('bad', 'طلب غلط');
+    if (yes) { this.sql.exec('INSERT INTO blocked (uid, at) VALUES (?, ?) ON CONFLICT(uid) DO NOTHING', uid, Date.now()); this.sql.exec('DELETE FROM subs WHERE phone = ?', uid); for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a && a.phone === uid) { try { ws.send(JSON.stringify({t: 'bye'})); ws.close(4001, 'gone'); } catch (e) {} } } }
+    else this.sql.exec('DELETE FROM blocked WHERE uid = ?', uid);
+    return true;
+  }
+  async fetch(req) {
+    if (req.headers.get('upgrade') !== 'websocket') return new Response('no', {status: 400});
+    const pair = new WebSocketPair(), [client, server] = Object.values(pair);
+    this.ctx.acceptWebSocket(server);
+    server.serializeAttachment({phone: null, at: Date.now()});
+    return new Response(null, {status: 101, webSocket: client});
+  }
+  async webSocketMessage(ws, msg) {
+    if (msg === 'ping') { ws.send('pong'); return; }
+    let j = null; try { j = JSON.parse(msg); } catch (e) { return; }
+    if (j && j.auth) {
+      let m = null; try { m = await this.auth(j.auth); } catch (e) {}
+      if (!m) { ws.send(JSON.stringify({t: 'bye'})); ws.close(4001, 'auth'); return; }
+      ws.serializeAttachment({phone: m.uid, at: Date.now()});
+      ws.send(JSON.stringify({t: 'ok', seq: 0}));
+    }
+  }
+  async webSocketClose(ws, code) { try { ws.close(code === 1006 ? 1000 : code, 'bye'); } catch (e) {} }
+  async webSocketError(ws) { try { ws.close(1011, 'error'); } catch (e) {} }
+  broadcast(o, onlyUid) {
+    const txt = JSON.stringify(o), blocked = new Set(this.sql.exec('SELECT uid FROM blocked').toArray().map(r => r.uid));
+    for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (!a || !a.phone || blocked.has(a.phone) || (onlyUid && a.phone !== onlyUid)) continue; try { ws.send(txt); } catch (e) {} }
+  }
+}
+
 /* ======================= the doors (HTTP) ======================= */
 const CORS = {'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type, authorization', 'access-control-max-age': '86400'};
 const J = (o, status = 200) => new Response(JSON.stringify(o), {status, headers: {'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...CORS}});
 const bearer = req => (req.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
 const shopOf = (env, id) => env.SHOP.get(env.SHOP.idFromName(id));
-const shopFromToken = (env, t) => { const id = String(t || '').split('.')[0]; if (!/^[0-9a-f]{16}$/.test(id)) throw new Fail('auth', 'لازم تسجل دخول مرة ثانية', 401); return shopOf(env, id); };
+const relayOf = (env, pid) => env.RELAY.get(env.RELAY.idFromName('fb:' + pid));
+// a shop on our server (16 letters) or a Firebase shop's notification card (r.<project>.<person>...)
+const shopFromToken = (env, t) => {
+  const parts = String(t || '').split('.');
+  if (parts[0] === 'r' && /^[a-z0-9-]{4,40}$/.test(parts[1] || '')) return relayOf(env, parts[1]);
+  if (!/^[0-9a-f]{16}$/.test(parts[0])) throw new Fail('auth', 'لازم تسجل دخول مرة ثانية', 401);
+  return shopOf(env, parts[0]);
+};
+const relayFromToken = (env, t) => { const parts = String(t || '').split('.'); if (parts[0] !== 'r' || !/^[a-z0-9-]{4,40}$/.test(parts[1] || '')) throw new Fail('auth', 'لازم تسجل دخول مرة ثانية', 401); return {relay: relayOf(env, parts[1]), pid: parts[1]}; };
 
 async function api(req, env, url) {
   const dir = env.DIR.get(env.DIR.idFromName('dir')), p = url.pathname.replace(/^\/api/, ''), t = bearer(req);
@@ -591,6 +801,19 @@ async function api(req, env, url) {
   if (p === '/members/add' && req.method === 'POST') return shopFromToken(env, t).addMember(t, body);
   if (p === '/members/set' && req.method === 'POST') return shopFromToken(env, t).setMember(t, body.phone, body);
   if (p === '/members/remove' && req.method === 'POST') return shopFromToken(env, t).removeMember(t, body.phone);
+  // shops on their own Firebase: notifications + free trial / activation
+  if (p === '/info') return dir.info();
+  if (p === '/fb/hello' && req.method === 'POST') {
+    const v = await verifyIdToken(body.idToken, env), owner = body.role === 'owner';
+    const lic = await dir.hello({pid: v.pid, uid: v.uid, role: owner ? 'owner' : 'worker', shop: body.shop, phone: body.phone, name: body.name});
+    const isOwner = owner && (await dir.isOwner(v.pid, v.uid));
+    const relay = await relayOf(env, v.pid).issue(v.pid, v.uid, isOwner);
+    return {relay, lic, owner: isOwner};
+  }
+  if (p === '/fb/lic') { const {relay, pid} = relayFromToken(env, t); const m = await relay.need(t); if (m.owner && q('people')) await dir.seen(pid, q('people')); return dir.licOf(pid); }
+  if (p === '/fb/activate' && req.method === 'POST') { const {relay, pid} = relayFromToken(env, t); await relay.need(t); return dir.activate(pid, body.code); }
+  if (p === '/fb/news' && req.method === 'POST') { const {relay} = relayFromToken(env, t); return relay.news(t, body.news, !!body.ownerOnly); }
+  if (p === '/fb/block' && req.method === 'POST') { const {relay} = relayFromToken(env, t); return relay.block(t, body.uid, !!body.blocked); }
   // the app's owner
   if (p === '/admin/state') return dir.adminState();
   if (p === '/admin/setup' && req.method === 'POST') return dir.adminSetup(body.password);
@@ -606,6 +829,12 @@ async function api(req, env, url) {
     if (p === '/admin/shops/set' && req.method === 'POST') return dir.setShop(body.id, body);
     if (p === '/admin/shops/reset' && req.method === 'POST') { if (!(await dir.getShop(body.id))) throw new Fail('noshop', 'المحل مو موجود', 404); return shopOf(env, body.id).adminReset(body.phone, body.password); }
     if (p === '/admin/password' && req.method === 'POST') return dir.adminPassword(body.password);
+    if (p === '/admin/projects') return dir.listProjects();
+    if (p === '/admin/projects/set' && req.method === 'POST') return dir.setProject(String(body.pid || ''), body);
+    if (p === '/admin/codes') return dir.listCodes();
+    if (p === '/admin/codes/add' && req.method === 'POST') return dir.addCode(body.note);
+    if (p === '/admin/settings' && req.method === 'POST') return dir.setSettings(body);
+    if (p === '/admin/settings') return dir.info();
   }
   throw new Fail('notfound', 'مو موجود', 404);
 }
@@ -617,7 +846,9 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, {status: 204, headers: CORS});
     if (url.pathname === '/api/live') {   // the live line: /api/live?shop=<id>, then the device sends its login inside
       const id = url.searchParams.get('shop') || '';
-      if (!/^[0-9a-f]{16}$/.test(id) || req.headers.get('upgrade') !== 'websocket') return new Response('no', {status: 400});
+      if (req.headers.get('upgrade') !== 'websocket') return new Response('no', {status: 400});
+      if (/^fb:[a-z0-9-]{4,40}$/.test(id)) return relayOf(env, id.slice(3)).fetch(req);   // a Firebase shop
+      if (!/^[0-9a-f]{16}$/.test(id)) return new Response('no', {status: 400});
       return shopOf(env, id).fetch(req);
     }
     try { return J(await api(req, env, url)); }

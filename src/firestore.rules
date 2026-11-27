@@ -1,0 +1,95 @@
+rules_version = '2';
+// دكّان — قواعد قفل قاعدة البيانات (نسخة v1). الصقها مثل ما هي، ولا تغيّر ولا حرف.
+// Dukkan security rules v1 — paste exactly as they are. Never replace them with "allow read, write: if true".
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signed() { return request.auth != null; }
+    function mpath() { return /databases/$(database)/documents/dk_members/$(request.auth.uid); }
+    function member() { return signed() && exists(mpath()) && get(mpath()).data.active == true; }
+    function me() { return get(mpath()).data; }
+    function owner() { return member() && me().role == 'owner'; }
+    function can(k) { return owner() || (member() && me().perms.get(k, false) == true); }
+    function shopOwner() { return get(/databases/$(database)/documents/dk_meta/shop).data.owner; }
+    function stamped() { return request.resource.data._by == request.auth.uid && request.resource.data._t == request.time; }
+    function moneyCol(c) { return c in ['c_cash', 'c_expenses', 'c_closings', 'c_recurring', 'c_logs']; }
+    function purCol(c) { return c in ['c_supplierTx', 'c_suppliers']; }
+    function guarded(c) { return c in ['c_settings', 'c_logs', 'c_cash', 'c_expenses', 'c_closings', 'c_recurring', 'c_supplierTx', 'c_suppliers', 'c_customers', 'c_products', 'c_invoices']; }
+    function canRead(c) { return member() && (!moneyCol(c) || can('money')) && (!purCol(c) || can('purchases')); }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+    function deleting() { return request.resource.data.get('_del', false) == true; }
+
+    function workerWrite(c) {
+      return member() && ((!deleting() && (
+          (c == 'c_logs' && resource == null)
+          || (moneyCol(c) && c != 'c_logs' && can('money'))
+          || (purCol(c) && can('purchases'))
+          || (c == 'c_customers' && can('customers'))
+          || (c == 'c_products' && (can('products') || (resource != null && changed().hasOnly(['stock', 'stkMarks', 'purMarks', 'imeiAdded', 'updatedAt', 'stockPending', 'stockDone', '_t', '_by']))))
+          || (c == 'c_invoices' && (resource == null ? can('sell') : invoiceAdd()))
+          || !guarded(c)))
+        || (deleting() && ((c == 'c_products' && can('products')) || (moneyCol(c) && c != 'c_logs' && can('money')) || (purCol(c) && can('purchases')) || !guarded(c))));
+    }
+    // an invoice that already exists: a worker only ADDS (a payment, a return, a cancel — each by its permission)
+    function invoiceAdd() {
+      let a = resource.data;
+      let b = request.resource.data;
+      return changed().hasOnly(['payments', 'returns', 'void', 'voidReason', 'voidAt', 'voidT', 'refund', 'refundWallet', 'stockPending', 'stockDone', 'lastReminder', 'reminders', 'no', 'updatedAt', 'by', 'byName', '_t', '_by'])
+        && (can('returns') || !changed().hasAny(['void', 'voidReason', 'voidAt', 'voidT', 'refund', 'refundWallet', 'stockPending', 'returns']))
+        && !(a.get('void', false) == true && b.get('void', false) != true)
+        && paysOk(a.get('payments', []), b.get('payments', []));
+    }
+    function paysOk(x, y) {
+      return x == y || (can('pay') && y.size() == x.size() + 1 && y[0:x.size()] == x && y[x.size()].amount is number && y[x.size()].amount > 0);
+    }
+
+    // the app checks that these are its rules (and that nothing is left open)
+    match /dk_ping/{v} { allow get: if v == 'v1'; }
+
+    // the shop: its name and who owns it
+    match /dk_meta/{id} {
+      allow get: if member() || (signed() && id == 'shop');
+      allow create: if signed() && id == 'shop' && request.resource.data.owner == request.auth.uid;
+      allow update: if owner() && request.resource.data.owner == resource.data.owner;
+    }
+    // the people of the shop and what each one may do
+    match /dk_members/{uid} {
+      allow get: if signed() && (request.auth.uid == uid || owner());
+      allow list: if owner();
+      allow create: if owner() || (signed() && request.auth.uid == uid && request.resource.data.role == 'owner' && shopOwner() == uid);
+      allow update: if owner() && (uid != request.auth.uid || (request.resource.data.role == 'owner' && request.resource.data.active == true));
+      allow delete: if owner() && uid != request.auth.uid;
+    }
+    // phone number → login (so people log in with their phone)
+    match /dk_logins/{phone} {
+      allow get: if true;
+      allow list: if false;
+      allow create, update: if owner() || (signed() && shopOwner() == request.auth.uid);
+      allow delete: if owner();
+    }
+    match /dk_names/{uid} {
+      allow read: if member();
+      allow write: if owner() || (signed() && uid == request.auth.uid && shopOwner() == uid);
+    }
+    // a worker's salary record: he sees his own only
+    match /dk_sal/{uid} {
+      allow get: if (signed() && request.auth.uid == uid && member()) || owner();
+      allow list, write: if owner();
+    }
+    // buying prices and costs: only people allowed to see money
+    match /dk_priv/{id} {
+      allow read: if can('money');
+      allow write: if can('money') && stamped();
+    }
+    // the manager code: the owner only
+    match /dk_opriv/{id} {
+      allow read: if owner();
+      allow write: if owner() && stamped();
+    }
+    // the shop's lists (products, invoices, customers ...)
+    match /{col}/{id} {
+      allow read: if col.matches('c_[A-Za-z0-9]+') && canRead(col);
+      allow create, update: if col.matches('c_[A-Za-z0-9]+') && stamped() && (owner() || workerWrite(col));
+      allow delete: if false;
+    }
+  }
+}

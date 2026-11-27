@@ -42,6 +42,9 @@ input:focus{border-color:#818CF8;background:#fff}input.l{direction:ltr;text-alig
 .reset{display:flex;gap:8px;margin-top:10px}.reset input{min-height:42px}
 .center{max-width:420px;margin:8vh auto;padding:0 16px}
 .empty{color:var(--mut);text-align:center;padding:20px}
+.tag.trial{background:#FFFBEB;color:#B45309}.tag.exp{background:#FFF1F2;color:#BE123C}
+.codes{display:grid;gap:6px;margin-top:10px}.code{display:flex;flex-wrap:wrap;gap:8px;align-items:center;border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:14px}.code b{direction:ltr;font-family:ui-monospace,monospace;font-size:15px;letter-spacing:.5px}.code .u{color:var(--mut)}
+.acts .btn.small{min-height:36px;font-size:13px}
 </style>
 </head>
 <body>
@@ -87,7 +90,12 @@ input:focus{border-color:#818CF8;background:#fff}input.l{direction:ltr;text-alig
   async function main() {
     root.innerHTML = `<div class="band"><div class="in"><div class="top"><img src="../app/icons/icon-192.png" alt=""><div><h1>لوحة المدير</h1><span>دكّان — إلك بس</span></div><button class="btn lite" id="out">خروج</button></div><div class="k" id="k"></div></div></div>
       <div class="wrap">
-        <div class="card"><h2>محل جديد</h2><p class="sub">تسوي حساب للمحل وتسلم صاحبه رقمه وكلمة السر. هو يدخل بيهن من التطبيق، ويضيف عماله بنفسه.</p>
+        <div class="card"><h2>محلات Firebase</h2><p class="sub">كل محل يربط Firebase مالته من التطبيق ويطلع هنا وحده. ياخذ تجربة مجانية، وبعدها إنت تفعّله دائمي، أو تنطيه كود تفعيل.</p><div id="fbl"><div class="empty">جاري التحميل...</div></div></div>
+        <div class="card"><h2>أكواد التفعيل</h2><p class="sub">سوّي كود وانطيه للمشتري، هو يكتبه بالتطبيق ويتفعّل وحده. كل كود لمحل واحد بس.</p>
+          <form id="cg" class="g"><div><input id="cn" placeholder="ملاحظة (مثلاً اسم المشتري)"></div><div><button class="btn pri">سوّي كود جديد</button></div></form><div class="msg" id="cgm"></div><div class="codes" id="codes"></div></div>
+        <div class="card"><h2>الإعدادات</h2><p class="sub">مدة التجربة المجانية للمحلات الجديدة، ورقم خدمة العملاء اللي يطلع بزر «تواصل ويانا» داخل التطبيق.</p>
+          <form id="st" class="g"><div><label for="td">أيام التجربة المجانية</label><input id="td" class="l" inputmode="numeric" placeholder="90"></div><div><label for="sp">رقم واتساب خدمة العملاء (أو رابط)</label><input id="sp" class="l" placeholder="07xxxxxxxxx"></div><div style="grid-column:1/-1"><button class="btn ghost">احفظ</button><div class="msg" id="stm"></div></div></form></div>
+        <div class="card"><h2>محل جديد على سيرفر دكّان (الطريقة القديمة)</h2><p class="sub">تسوي حساب للمحل وتسلم صاحبه رقمه وكلمة السر. بياناته تنحفظ عندك إنت. (المحلات الجديدة الأفضل تربط Firebase مالتها.)</p>
           <form id="add" class="g" autocomplete="off">
             <div><label for="sn">اسم المحل</label><input id="sn" placeholder="مثال: محلات النور للموبايل"></div>
             <div><label for="on">اسم صاحب المحل</label><input id="on" placeholder="مثال: علي حسين"></div>
@@ -95,7 +103,7 @@ input:focus{border-color:#818CF8;background:#fff}input.l{direction:ltr;text-alig
             <div><label for="ow">كلمة سر صاحب المحل</label><input id="ow" placeholder="6 حروف أو أكثر"></div>
             <div style="grid-column:1/-1"><button class="btn pri">سوّي حساب المحل</button><div class="msg" id="am"></div></div>
           </form></div>
-        <div class="card"><h2>المحلات</h2><div id="list"><div class="empty">جاري التحميل...</div></div></div>
+        <div class="card"><h2>محلات سيرفر دكّان</h2><div id="list"><div class="empty">جاري التحميل...</div></div></div>
         <div class="card"><h2>كلمة سر المدير</h2><p class="sub">إذا غيّرتها، أي جهاز ثاني فاتح هاي الصفحة يطلع منها.</p>
           <form id="cp" class="g"><div><input id="np" type="password" placeholder="كلمة السر الجديدة" autocomplete="new-password"></div><div><button class="btn ghost">غيّر كلمة السر</button></div></form><div class="msg" id="cm"></div></div>
       </div>`;
@@ -115,7 +123,46 @@ input:focus{border-color:#818CF8;background:#fff}input.l{direction:ltr;text-alig
       e.preventDefault(); const cm = document.getElementById('cm');
       try { const r = await call('/admin/password', {password: np.value}); setTok(r.token); cm.className = 'msg ok'; cm.textContent = 'تغيّرت ✓'; np.value = ''; } catch (err) { cm.className = 'msg bad'; cm.textContent = err.message; }
     };
-    load();
+    document.getElementById('cg').onsubmit = async e => {
+      e.preventDefault(); const m = document.getElementById('cgm');
+      try { const r = await call('/admin/codes/add', {note: cn.value}); m.className = 'msg ok'; m.textContent = 'الكود الجديد: ' + r.code; cn.value = ''; loadCodes(); } catch (err) { m.className = 'msg bad'; m.textContent = err.message; }
+    };
+    document.getElementById('st').onsubmit = async e => {
+      e.preventDefault(); const m = document.getElementById('stm');
+      try { const r = await call('/admin/settings', {trialDays: toEn(td.value) || 90, support: toEn(sp.value).trim()}); td.value = r.trialDays; sp.value = r.support; m.className = 'msg ok'; m.textContent = 'انحفظ ✓'; } catch (err) { m.className = 'msg bad'; m.textContent = err.message; }
+    };
+    call('/admin/settings').then(r => { td.value = r.trialDays; sp.value = r.support; }).catch(() => {});
+    load(); loadFb(); loadCodes();
+  }
+  async function loadFb() {
+    const box = document.getElementById('fbl');
+    let L; try { L = await call('/admin/projects'); } catch (e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+    if (!L.length) { box.innerHTML = '<div class="empty">ما أكو محلات Firebase بعد. لما أحد يربط محله من التطبيق، يطلع هنا.</div>'; return; }
+    const ST = {active: ['مفعّل دائمي', ''], trial: ['تجربة', 'trial'], expired: ['انتهت التجربة', 'exp'], stopped: ['موقوف', 'off']};
+    box.innerHTML = L.map(s => {
+      const l = s.lic || {}, st = ST[l.state] || ['?', ''];
+      return `<div class="shop" data-pid="${esc(s.pid)}"><div class="h"><b>${esc(s.name || 'بدون اسم')}</b><span class="tag ${st[1]}">${st[0]}${l.state === 'trial' ? ' · باقي ' + l.days + ' يوم' : ''}</span></div>
+        <div class="meta">صاحبه: ${esc(s.ownerName || '')} · <span class="num">${esc(s.phone || '')}</span> · الأشخاص: ${s.people || 0}<br>مشروع Firebase: <span class="num">${esc(s.pid)}</span> · من: ${esc(fmt(s.firstSeen))} · آخر ظهور: ${esc(fmt(s.lastSeen))}${s.note ? '<br>ملاحظة: ' + esc(s.note) : ''}</div>
+        <div class="acts">${l.state !== 'active' ? '<button class="btn pri small" data-st="active">فعّل دائمي</button>' : ''}
+          ${l.state !== 'active' ? '<button class="btn ghost small" data-add="30">+30 يوم تجربة</button>' : ''}
+          ${l.state === 'stopped' ? '<button class="btn ghost small" data-st="trial">رجّع تشغيله</button>' : '<button class="btn red small" data-st="stopped">أوقف</button>'}
+          ${l.state === 'active' ? '<button class="btn ghost small" data-st="trial">رجّعه تجربة</button>' : ''}
+          <button class="btn ghost small" data-note="1">ملاحظة</button></div></div>`;
+    }).join('');
+    box.querySelectorAll('.shop[data-pid]').forEach(card => {
+      const pid = card.dataset.pid;
+      card.querySelectorAll('[data-st]').forEach(b => b.onclick = async () => {
+        if (b.dataset.st === 'stopped' && !b.dataset.sure) { b.dataset.sure = 1; b.textContent = 'متأكد؟ اضغط مرة ثانية'; return; }
+        try { await call('/admin/projects/set', {pid, state: b.dataset.st}); loadFb(); } catch (e) { alertBox(b, e.message); }
+      });
+      card.querySelectorAll('[data-add]').forEach(b => b.onclick = async () => { try { await call('/admin/projects/set', {pid, addDays: +b.dataset.add}); loadFb(); } catch (e) { alertBox(b, e.message); } });
+      card.querySelectorAll('[data-note]').forEach(b => b.onclick = async () => { const n = prompt('ملاحظة عن هذا المحل:'); if (n == null) return; try { await call('/admin/projects/set', {pid, note: n}); loadFb(); } catch (e) { alertBox(b, e.message); } });
+    });
+  }
+  async function loadCodes() {
+    const box = document.getElementById('codes');
+    let L; try { L = await call('/admin/codes'); } catch (e) { box.innerHTML = ''; return; }
+    box.innerHTML = L.length ? L.map(c => `<div class="code"><b>${esc(c.code)}</b><span>${esc(c.note || '')}</span><span class="u">${c.usedBy ? 'مستعمل: ' + esc(c.shop || c.usedBy) + ' · ' + esc(fmt(c.usedAt)) : 'ما مستعمل بعد'}</span></div>`).join('') : '<div class="empty">ما أكو أكواد بعد.</div>';
   }
 
   async function load() {

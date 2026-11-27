@@ -1,12 +1,22 @@
 {
-  "version": "2026.11.27-2238",
+  "version": "2026.11.27-2338",
   "exe": "https://github.com/alaakhan003-byte/dukkan/releases/latest/download/Dukkan-Setup.exe",
   "repo": "alaakhan003-byte/dukkan",
   "files": [
     {
       "path": "cloud.js",
-      "size": 50724,
-      "sha256": "2b593eb58cf17ac6a841e34f9c94516b69b49aaaeb5828794da3112621f487a4"
+      "size": 53015,
+      "sha256": "04509ce08eb3875dd47e740be51c982e64d04b1172c2f0d9a52130304488d35a"
+    },
+    {
+      "path": "fire.js",
+      "size": 89427,
+      "sha256": "9db6d21771ad595c121c5972014b58215706247229f6ba9280fd4f8140222266"
+    },
+    {
+      "path": "firestore.rules.txt",
+      "size": 5619,
+      "sha256": "29f5ef0fbef1b4ca0b784ab4927e5debd196400f1380bf9e70850ce9a95158fe"
     },
     {
       "path": "icons/apple-touch-icon.png",
@@ -35,8 +45,8 @@
     },
     {
       "path": "index.html",
-      "size": 768089,
-      "sha256": "de34e3baa165130a6807a2e8ce1dd8e1c7e1c45ecc284ad3ec9e75a5c740fdda"
+      "size": 768139,
+      "sha256": "8f8b9dd0fb385ca73293f702ae5a2429dc9a2a0fbb7a55510826bb3980b0e220"
     },
     {
       "path": "manifest.webmanifest",
@@ -46,7 +56,27 @@
     {
       "path": "site.js",
       "size": 14870,
-      "sha256": "39329981a5317541eacea48d27752d4d11e499e3c3d6d20dff30ae6b6976c78b"
+      "sha256": "b43c3b6ea549d2dd0197e658b6ebb48fa786dc96a670147ce6ef059074982a86"
+    },
+    {
+      "path": "vendor/FIREBASE-LICENSE.txt",
+      "size": 84,
+      "sha256": "43d1d1882043f17125fcd57b0ce006aa04684099f0fd84e497fdbcd6b69b190f"
+    },
+    {
+      "path": "vendor/firebase-app-compat.js",
+      "size": 32977,
+      "sha256": "f1f48d4e4bbdfd2d987202d5561356e1760dac28f2646f7fe836a533e6703d0f"
+    },
+    {
+      "path": "vendor/firebase-auth-compat.js",
+      "size": 141637,
+      "sha256": "f7ded30870bd40a5fa8623ce9e7e58f50d71c8aa5c2e844b218dce23e07acc7c"
+    },
+    {
+      "path": "vendor/firebase-firestore-compat.js",
+      "size": 571374,
+      "sha256": "5a1af0d36ccecea2e4234834cd273c90e0b73d5aa3502c6aa1b48e8f3b1e0eff"
     },
     {
       "path": "vendor/zxing.min.js",

@@ -2,3 +2,5 @@ desktop/node_modules/
 desktop/dist/
 .DS_Store
 desktop/app/
+.dev.vars
+.wrangler/

@@ -1,6 +1,7 @@
 {
   // دكّان على Cloudflare: الموقع (مجلد public) + السيرفر (worker/index.js) لحسابات المحلات والمزامنة.
   // كل محل إله قاعدة بيانات خاصة بيه (Durable Object)، ما أحد يشوف بيانات الثاني.
+  // المحلات اللي على Firebase مالتها: بياناتها عندها، وهنا بس الإشعارات (Relay) والتفعيل.
   "name": "dukkan",
   "main": "worker/index.js",
   "compatibility_date": "2025-09-01",
@@ -13,10 +14,12 @@
   "durable_objects": {
     "bindings": [
       {"name": "DIR", "class_name": "Directory"},
-      {"name": "SHOP", "class_name": "Shop"}
+      {"name": "SHOP", "class_name": "Shop"},
+      {"name": "RELAY", "class_name": "Relay"}
     ]
   },
   "migrations": [
-    {"tag": "v1", "new_sqlite_classes": ["Directory", "Shop"]}
+    {"tag": "v1", "new_sqlite_classes": ["Directory", "Shop"]},
+    {"tag": "v2", "new_sqlite_classes": ["Relay"]}
   ]
 }

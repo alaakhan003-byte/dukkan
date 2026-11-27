@@ -36,6 +36,17 @@
     }, function (e) { var x = new Error('ما أكو اتصال بالسيرفر'); x.code = 'offline'; throw x; }).finally(function () { clearTimeout(t); });
   }
 
+  // everything about people goes through T: our server by default; a Firebase shop swaps in its own
+  var T = {
+    members: function () { return call('/members'); },
+    add: function (o) { return call('/members/add', o); },
+    set: function (phone, patch) { return call('/members/set', Object.assign({phone: phone}, patch)); },
+    remove: function (phone) { return call('/members/remove', {phone: phone}); },
+    salary: function (phone) { return call('/salary' + (phone ? '?phone=' + encodeURIComponent(phone) : '')); },
+    me: function () { return call('/me'); }
+  };
+  var hooks = {};
+
   /* ---------- the copy on this device (IndexedDB) ---------- */
   function idb(name) {
     return new Promise(function (ok, bad) {
@@ -243,6 +254,7 @@
       var f = q.where[0], v = q.where[1];
       var local = function () { var docs = []; db.col(c).forEach(function (d, i) { if (JSON.stringify(d[f]) === JSON.stringify(v)) docs.push(docSnap(i, d)); }); return {docs: docs, size: docs.length, empty: !docs.length}; };
       if (navigator.onLine === false || db.offline) return Promise.resolve(local());
+      if (db.remoteQuery) return db.remoteQuery(c, f, v).then(null, local);
       return call('/query?c=' + encodeURIComponent(c) + '&f=' + encodeURIComponent(f) + '&v=' + encodeURIComponent(JSON.stringify(v)), null, 4000).then(function (r) {
         var docs = r.map(function (x) { return docSnap(x.i, x.d); });
         db.queue.forEach(function (o) { if (o.c === c && o.t === 'set' && JSON.stringify(o.d[f]) === JSON.stringify(v) && !docs.some(function (d) { return d.id === o.i; })) docs.push(docSnap(o.i, o.d)); });
@@ -268,6 +280,13 @@
     return n;
   }
   window.__dkNote = sideNote;
+  // what fire.js (a shop on its own Firebase) builds on
+  var core = {
+    Cloud: Cloud, docSnap: docSnap, KEY: KEY, call: call, sideNote: sideNote, hooks: hooks,
+    overlay: function (h) { return overlay(h); }, showLogin: function (m, a) { showLogin(m, a); }, startLocal: function () { startLocal(); },
+    startCloud: function (inst) { startCloud(inst); }, desktopSession: function () { desktopSession(); },
+    getSess: function () { return sess; }, setSess: function (s) { sess = s; setRole(); }, setT: function (t) { T = t; }
+  };
 
   /* ---------- real notifications on this device ---------- */
   var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -307,11 +326,11 @@
 
   /* ---------- who is using it ---------- */
   var people = {}; try { people = JSON.parse(LS.get('dk:people') || '{}'); } catch (e) {}
-  function loadPeople() { return call('/members').then(function (L) { people = {}; L.forEach(function (m) { people[m.phone] = {name: m.name, role: m.role}; }); LS.set('dk:people', JSON.stringify(people)); return L; }); }
+  function loadPeople() { return T.members().then(function (L) { people = {}; L.forEach(function (m) { people[m.phone] = {name: m.name, role: m.role}; }); LS.set('dk:people', JSON.stringify(people)); return L; }); }
   function userApi() {
     return {
       id: function () { return Promise.resolve(sess.user.phone); },
-      can: function () { return Promise.resolve(true); },
+      can: function () { return Promise.resolve(hooks.canWrite ? !!hooks.canWrite() : true); },   // a Firebase shop whose free trial ended: look, don't sell
       canEdit: function () { return Promise.resolve(sess.user.role === 'owner'); },
       profiles: function (ids) { var miss = ids.some(function (i) { return !people[i]; }); return (miss ? loadPeople().catch(function () {}) : Promise.resolve()).then(function () { var o = {}; ids.forEach(function (i) { if (people[i]) o[i] = {name: people[i].name}; }); return o; }); }
     };
@@ -326,9 +345,9 @@
     if (name === 'user') return userReady;
     return baseUse ? baseUse(name) : Promise.resolve(null);
   }};
-  function startCloud() {
+  function startCloud(inst) {
     setRole();
-    cloud = new Cloud(sess);
+    cloud = inst || new Cloud(sess);
     window.__dkCloud = cloud;
     cloud.ready.then(function () { resolveDb(cloud); resolveUser(userApi()); cloud.start(); loadPeople().catch(function () {}); offerUpload(); pushInvite(); desktopSession(); setTimeout(function () { refreshMe(false); }, 1500); })
       .catch(function () { resolveDb(null); resolveUser(null); say('ما گدرت أفتح التخزين على هذا الجهاز', false); });
@@ -338,9 +357,9 @@
   function setRole() { window.__dkRole = sess && sess.user ? {role: sess.user.role, perms: sess.user.perms || {}, name: sess.user.name, phone: sess.user.phone} : null; }
   var HIDE = function (P) { return (P.money ? [] : ['cash', 'expenses', 'closings', 'recurring', 'logs']).concat(P.purchases ? [] : ['supplierTx', 'suppliers']); };
   function refreshMe(fromServer) {
-    return call('/me').then(function (r) {
+    return T.me().then(function (r) {
       var before = JSON.stringify((sess.user && sess.user.perms) || {}), now = JSON.stringify(r.user.perms || {});
-      sess.user = r.user; sess.shop = r.shop; LS.set('dk:session', JSON.stringify(sess)); setRole();
+      sess.user = r.user; sess.shop = r.shop; if (!sess.fb) LS.set('dk:session', JSON.stringify(sess)); setRole();
       if (before === now || !cloud) return;
       // permissions changed: drop what may no longer be seen, fetch again what may now be seen, and redraw the app
       var hide = HIDE(r.user.perms || {}), st = cloud.d.transaction(['docs', 'meta'], 'readwrite');
@@ -351,7 +370,7 @@
     }).catch(function (e) { if (e && (e.status === 401 || e.status === 403)) relogin(e); });
   }
   // the Windows program keeps its own live line (it notifies even with the window closed)
-  function desktopSession() { try { if (window.dukkanDesktop && window.dukkanDesktop.session) window.dukkanDesktop.session(sess ? {token: sess.token, shop: sess.shop.id, phone: sess.user.phone, name: sess.shop.name} : null); } catch (e) {} }
+  function desktopSession() { try { if (window.dukkanDesktop && window.dukkanDesktop.session) window.dukkanDesktop.session(sess ? (sess.fb ? sess.desk : {token: sess.token, shop: sess.shop.id, phone: sess.user.phone, name: sess.shop.name}) : null); } catch (e) {} }
 
   /* ---------- the login screen ---------- */
   var CSS = '#dkIn{position:fixed;inset:0;z-index:400;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto;background:radial-gradient(70% 55% at 85% 0%,rgba(129,140,248,.5),transparent 60%),radial-gradient(60% 50% at 0% 100%,rgba(236,72,153,.32),transparent 62%),linear-gradient(170deg,#3730A3,#1E1B4B 70%);font-family:inherit;color:#0F172A}'
@@ -413,6 +432,7 @@
   function relogin(e) {
     if (document.getElementById('dkIn')) return;
     var m = e && e.code === 'disabled' ? e.message : e && e.code === 'inactive' ? e.message : 'لازم تسجل دخول مرة ثانية (يمكن تغيّرت كلمة السر). بياناتك محفوظة';
+    if (hooks.relogin) { hooks.relogin(m); return; }
     showLogin(m, true);
   }
   // the first time a shop logs in on a device that already has data from "trying without an account"
@@ -449,15 +469,23 @@
       + '<div class="dk-note" id="dkSync"></div>'
       + '<div class="dk-row"><span>الإشعارات على هذا الجهاز</span><b id="dkPushSt">...</b></div><div id="dkPushBox"></div>'
       + (owner ? '<button type="button" class="btn ghost dk-btn" id="dkTeam">العمال: حساباتهم، صلاحياتهم ورواتبهم</button><div id="dkTeamBox"></div>' : '<div id="dkMySal"></div>')
+      + (hooks.account ? hooks.account() : owner && window.DKFire ? '<button type="button" class="btn ghost dk-btn" id="dkMove">🔥 انقل محلك لـ Firebase مالتك</button>' : '')
       + '<button type="button" class="btn ghost dk-btn" id="dkOut" style="color:#BE123C">تسجيل خروج</button>';
   };
   window.__dkAccountBind = function () {
     if (!cloud) return;
     cloud.status();
     paintPush();
+    if (hooks.accountBind) hooks.accountBind();
+    var mv = document.getElementById('dkMove');
+    if (mv) mv.onclick = function () {
+      if (cloud.queue.length) { say('انتظر لحد ما تنرفع كل الحركات، وبعدين انقل', false); return; }
+      window.DKFire.setup(core, {migrate: true});
+    };
     var out = document.getElementById('dkOut');
     if (out) out.onclick = function () {
       if (cloud.queue.length && !confirmOut) { confirmOut = true; out.textContent = cloud.queue.length + ' حركة ما انرفعت بعد! اضغط مرة ثانية حتى تطلع'; setTimeout(function () { confirmOut = false; out.textContent = 'تسجيل خروج'; }, 5000); return; }
+      if (hooks.logout) { hooks.logout(); return; }
       try { if (window.dukkanDesktop && window.dukkanDesktop.session) window.dukkanDesktop.session(null); } catch (e) {}
       if (canPush()) pushOff().catch(function () {});
       LS.del('dk:session'); LS.del('dk:people'); LS.del('dk:pushAsked');
@@ -467,7 +495,7 @@
     var tb = document.getElementById('dkTeam');
     if (tb) tb.onclick = function () { team(document.getElementById('dkTeamBox')); };
     var ms = document.getElementById('dkMySal');
-    if (ms) call('/salary').then(function (r) { ms.innerHTML = salaryHTML(r, true); }).catch(function () { ms.innerHTML = ''; });
+    if (ms) T.salary().then(function (r) { ms.innerHTML = salaryHTML(r, true); }).catch(function () { ms.innerHTML = ''; });
   };
   var confirmOut = false;
   var M = function (n) { return Math.round(+n || 0).toLocaleString('en-US'); };
@@ -484,6 +512,7 @@
     var d = new Date(), date = d.toISOString().slice(0, 10), month = date.slice(0, 7);
     try { if (typeof setLog === 'function') setLog('تسليم راتب: ' + name + ' — ' + M(amount) + ' د.ع (' + MONTH(month) + ')', 'add'); } catch (e) {}
     return put('expenses', {category: 'رواتب', amount: amount, date: date, desc: 'راتب ' + name + ' — ' + MONTH(month), payee: name, worker: phone, month: month, createdAt: Date.now()})
+      .then(function () { return hooks.paid ? hooks.paid(phone, {amount: amount, date: date, month: month, desc: 'راتب ' + name + ' — ' + MONTH(month)}).catch(function () {}) : null; })   // a Firebase shop: the worker's own salary page (he can't see expenses)
       .then(function () { say('انسجل الراتب كصرفية ✓'); team(box); });
   }
   function paintPush() {
@@ -519,19 +548,19 @@
       var err = box.querySelector('#dkAe');
       box.querySelector('#dkAg').onclick = function () {
         var b = this; b.disabled = true;
-        call('/members/add', {name: box.querySelector('#dkAn').value, phone: toEn(box.querySelector('#dkAp').value), password: box.querySelector('#dkAw').value})
+        T.add({name: box.querySelector('#dkAn').value, phone: toEn(box.querySelector('#dkAp').value), password: box.querySelector('#dkAw').value})
           .then(function () { say('انضاف العامل ✓'); team(box); }).catch(function (e) { err.textContent = e.message; b.disabled = false; });
       };
       box.querySelectorAll('.dk-perm[data-ph] input[data-pk]').forEach(function (c) {
         c.onchange = function () {
           var d = c.closest('.dk-perm'), perms = {}; d.querySelectorAll('input[data-pk]').forEach(function (x) { perms[x.dataset.pk] = x.checked; });
-          call('/members/set', {phone: d.dataset.ph, perms: perms}).then(function () { say('انحفظت الصلاحيات ✓ (تتطبق على أجهزته فوراً)'); }).catch(function (e) { say(e.message, false); c.checked = !c.checked; });
+          T.set(d.dataset.ph, {perms: perms}).then(function () { say('انحفظت الصلاحيات ✓ (تتطبق على أجهزته فوراً)'); }).catch(function (e) { say(e.message, false); c.checked = !c.checked; });
         };
       });
       box.querySelectorAll('.dk-salbox').forEach(function (d) {
         var ins = d.querySelectorAll('input'), info = d.querySelector('.dk-salinfo');
-        d.addEventListener('toggle', function () { if (d.open) call('/salary?phone=' + d.dataset.ph).then(function (r) { info.innerHTML = salaryHTML(r, false); }).catch(function () {}); });
-        d.querySelector('[data-salset]').onclick = function () { call('/members/set', {phone: d.dataset.ph, salary: +toEn(ins[0].value).replace(/\D/g, '') || 0}).then(function () { say('انحفظ الراتب ✓'); team(box); }).catch(function (e) { say(e.message, false); }); };
+        d.addEventListener('toggle', function () { if (d.open) T.salary(d.dataset.ph).then(function (r) { info.innerHTML = salaryHTML(r, false); }).catch(function () {}); });
+        d.querySelector('[data-salset]').onclick = function () { T.set(d.dataset.ph, {salary: +toEn(ins[0].value).replace(/\D/g, '') || 0}).then(function () { say('انحفظ الراتب ✓'); team(box); }).catch(function (e) { say(e.message, false); }); };
         d.querySelector('[data-salpay]').onclick = function () {
           var b = this, amt = +toEn(ins[1].value).replace(/\D/g, '') || 0;
           if (!amt) { say('اكتب مبلغ التسليم', false); return; }
@@ -539,16 +568,16 @@
           b.disabled = true; payOne(d.dataset.ph, d.dataset.nm, amt, box).catch(function (e) { say(e.message || 'ما انسجل', false); b.disabled = false; });
         };
       });
-      box.querySelectorAll('[data-act]').forEach(function (b) { b.onclick = function () { call('/members/set', {phone: b.dataset.act, active: b.dataset.v === '1'}).then(function () { team(box); }).catch(function (e) { say(e.message, false); }); }; });
-      box.querySelectorAll('[data-rm]').forEach(function (b) { b.onclick = function () { if (b.dataset.sure) { call('/members/remove', {phone: b.dataset.rm}).then(function () { say('انحذف'); team(box); }).catch(function (e) { say(e.message, false); }); } else { b.dataset.sure = 1; b.textContent = 'متأكد؟'; } }; });
+      box.querySelectorAll('[data-act]').forEach(function (b) { b.onclick = function () { T.set(b.dataset.act, {active: b.dataset.v === '1'}).then(function () { team(box); }).catch(function (e) { say(e.message, false); }); }; });
+      box.querySelectorAll('[data-rm]').forEach(function (b) { b.onclick = function () { if (b.dataset.sure) { T.remove(b.dataset.rm).then(function () { say('انحذف'); team(box); }).catch(function (e) { say(e.message, false); }); } else { b.dataset.sure = 1; b.textContent = 'متأكد؟'; } }; });
       box.querySelectorAll('[data-pw]').forEach(function (b) {
         b.onclick = function () {
           var row = b.closest('.dk-m'); if (row.querySelector('.dk-pw')) return;
           row.insertAdjacentHTML('beforeend', '<div class="dk-pw"><input placeholder="كلمة السر الجديدة"><button type="button">حفظ</button></div>');
           var i = row.querySelector('.dk-pw input'); i.focus();
           row.querySelector('.dk-pw button').onclick = function () {
-            call('/members/set', {phone: b.dataset.pw, password: i.value}).then(function (r) {
-              if (r.token) { sess.token = r.token; LS.set('dk:session', JSON.stringify(sess)); }
+            T.set(b.dataset.pw, {password: i.value}).then(function (r) {
+              if (r.token && !sess.fb) { sess.token = r.token; LS.set('dk:session', JSON.stringify(sess)); }
               say('تغيّرت كلمة السر ✓'); team(box);
             }).catch(function (e) { say(e.message, false); });
           };
@@ -569,9 +598,11 @@
       + '.dk-sal{display:grid;gap:4px}.dk-sal details summary{cursor:pointer;font-size:13px;color:#4338CA}.dk-row.small{font-size:13px}.dk-salinfo{margin:6px 0}'
       + '.dk-pw{display:flex;gap:6px;flex:1 1 100%}.dk-pw input,.dk-add input{flex:1;min-height:42px;border:1.5px solid #E2E8F0;border-radius:11px;padding:0 10px;font:inherit;font-size:16px}.dk-add{display:grid;gap:8px;margin-top:10px}.dk-add input.l{direction:ltr;text-align:right}.dk-er{color:#BE123C;font-size:13px;font-weight:600}';
     document.head.appendChild(st);
-    // decide: an account, "trying without one", or the login screen
-    if (sess && sess.token) startCloud();
+    // decide: a Firebase shop (or a link to join one), an account on our server, "trying without one", or the first screen
+    if (window.DKFire && window.DKFire.has()) window.DKFire.boot(core);
+    else if (sess && sess.token) startCloud();
     else if (choice === 'local') startLocal();
+    else if (window.DKFire) window.DKFire.boot(core);
     else showLogin();
   });
 })();
