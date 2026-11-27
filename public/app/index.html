@@ -10,7 +10,7 @@
 <meta name="application-name" content="دكّان">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
-<script src="site.js?v=2026.11.27-1951"></script>
+<script src="site.js?v=2026.11.27-2030"></script>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#312E81">
 <title>نظام المحل</title>
@@ -4006,7 +4006,7 @@ function openSettingsMenu() {
       ${row('smDl', IC.download, '#0EA5E9', 'تنزيل نسخة كاملة (ملف)', c.lastBackupAt ? 'آخر نسخة: ' + fmtD(toISO(new Date(c.lastBackupAt))) + ' ' + timeOf(c.lastBackupAt) : 'ما انحفظت نسخة بعد')}
       ${readOnly ? '' : row('smRs', IC.upload, '#F59E0B', 'استرجاع نسخة', 'من ملف أو من نص إيميل النسخة')}
       ${row('smLog', IC.history, '#475569', 'سجل الحركات', 'منو سوّى شنو ووكت')}
-      <div class="warnline" style="background:#EEF2FF;color:#3730A3;margin-top:4px">${I(IC.bell).replace('<svg', '<svg style="width:18px;height:18px;flex:none"')}<div><b>إشعارات الآيفون:</b> كل يوم الساعة <span class="num">8:42</span> الصبح يوصلك إشعار من تطبيق Claude بالزبائن اللي لازم يسددون، حتى لو التطبيق مسكّر. لازم تكون إشعارات تطبيق Claude مفعّلة بإعدادات الآيفون.</div></div>
+      ${window.APP_SITE ? '' : `<div class="warnline" style="background:#EEF2FF;color:#3730A3;margin-top:4px">${I(IC.bell).replace('<svg', '<svg style="width:18px;height:18px;flex:none"')}<div><b>إشعارات الآيفون:</b> كل يوم الساعة <span class="num">8:42</span> الصبح يوصلك إشعار من تطبيق Claude بالزبائن اللي لازم يسددون، حتى لو التطبيق مسكّر. لازم تكون إشعارات تطبيق Claude مفعّلة بإعدادات الآيفون.</div></div>`}
     </div>`;
   $('#pickBd').classList.add('on');
   $('#pkX').onclick = closePicker;
@@ -4308,7 +4308,7 @@ SEC.alerts.update = function () {
       <div class="y"><b class="num">${yel.length}</b><span>اقترب</span></div>
       <div><b class="num">${money(total)}</b><span>المطلوب د.ع</span></div>
     </div>
-    <div class="nh-f">${late ? `⚠ منهم <b class="num">${late}</b> متأخر · ` : ''}التنبيه قبل <b class="num">${cfg().alertDays}</b> أيام · إشعار التلفون <span class="num">8:42</span> الصبح و<span class="num">9:42</span> بالليل</div>`;
+    <div class="nh-f">${late ? `⚠ منهم <b class="num">${late}</b> متأخر · ` : ''}التنبيه قبل <b class="num">${cfg().alertDays}</b> أيام${window.APP_SITE ? '' : ` · إشعار التلفون <span class="num">8:42</span> الصبح و<span class="num">9:42</span> بالليل`}</div>`;
   $('#alSet').onclick = openSettings;
   $('#atabs').innerHTML = tabsHTML([['all', 'الكل'], ['red', 'لازم يسدد'], ['yellow', 'اقترب']], aTab, {red: red.length});
   const groups = [['red', 'لازم يسددون', red], ['yellow', 'اقترب موعدهم', yel]].filter(([k]) => aTab === 'all' || aTab === k);
@@ -5082,7 +5082,7 @@ function openSettingsMenu() {
       ${row('smDl', IC.download, '#0EA5E9', 'تنزيل نسخة كاملة (ملف)', c.lastBackupAt ? 'آخر نسخة: ' + fmtD(toISO(new Date(c.lastBackupAt))) + ' ' + timeOf(c.lastBackupAt) : 'ما انحفظت نسخة بعد')}
       ${readOnly ? '' : row('smRs', IC.upload, '#F59E0B', 'استرجاع نسخة', 'من ملف أو من نص إيميل النسخة')}
       ${row('smLog', IC.history, '#475569', 'سجل الحركات', 'منو سوّى شنو ووكت')}
-      <div class="warnline" style="background:#EEF2FF;color:#3730A3;margin-top:4px">${I(IC.bell).replace('<svg', '<svg style="width:18px;height:18px;flex:none"')}<div><b>إشعارات الآيفون:</b> كل يوم الساعة <span class="num">8:42</span> الصبح يوصلك إشعار من تطبيق Claude بالزبائن اللي لازم يسددون، حتى لو التطبيق مسكّر. لازم تكون إشعارات تطبيق Claude مفعّلة بإعدادات الآيفون.</div></div>
+      ${window.APP_SITE ? '' : `<div class="warnline" style="background:#EEF2FF;color:#3730A3;margin-top:4px">${I(IC.bell).replace('<svg', '<svg style="width:18px;height:18px;flex:none"')}<div><b>إشعارات الآيفون:</b> كل يوم الساعة <span class="num">8:42</span> الصبح يوصلك إشعار من تطبيق Claude بالزبائن اللي لازم يسددون، حتى لو التطبيق مسكّر. لازم تكون إشعارات تطبيق Claude مفعّلة بإعدادات الآيفون.</div></div>`}
     </div>`;
   $('#pickBd').classList.add('on');
   $('#pkX').onclick = closePicker;
