@@ -34,7 +34,14 @@ app = re.sub(r'<meta name="theme-color" content="[^"]*">', '<meta name="theme-co
 for n in ['site.js', 'sw.js']:
     (pub / n).write_text((R / 'src' / n).read_text(encoding='utf-8').replace('__VERSION__', version), encoding='utf-8')
 exe = f"https://github.com/{cfg['repo']}/releases/latest/download/Dukkan-Setup.exe"
-(pub / 'version.json').write_text(json.dumps({'version': version, 'exe': exe, 'repo': cfg['repo']}, ensure_ascii=False, indent=2) + '\n')
+import hashlib
+# the list of app files with their fingerprints: the Windows program downloads only the ones that changed
+files = []
+for f in sorted(pub.rglob('*')):
+    rel = f.relative_to(pub).as_posix()
+    if f.is_file() and rel not in ('version.json', 'sw.js'):
+        files.append({'path': rel, 'size': f.stat().st_size, 'sha256': hashlib.sha256(f.read_bytes()).hexdigest()})
+(pub / 'version.json').write_text(json.dumps({'version': version, 'exe': exe, 'repo': cfg['repo'], 'files': files}, ensure_ascii=False, indent=2) + '\n')
 land = (R / 'src' / 'landing.html').read_text(encoding='utf-8').replace('__VERSION__', version).replace('__EXE__', exe).replace('__REPO__', cfg['repo'])
 (R / 'public' / 'index.html').write_text(land, encoding='utf-8')
 if cfg['url']:

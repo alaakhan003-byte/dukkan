@@ -1,12 +1,12 @@
 name: نسخة الحاسبة (Windows EXE)
 
-# كل ما يتحدث التطبيق، ينبني EXE جديد وينزل بـ Releases.
-# البرنامج بأجهزة الناس يشوفه ويطلعلهم «حدّث هسه».
+# ينبني EXE جديد بس لما يتغير البرنامج نفسه (مجلد desktop).
+# تحديثات التطبيق العادية توصل للبرنامج من الموقع مباشرة وبثواني (حوالي 1 ميگا).
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['src/**', 'public/app/**', 'desktop/**', '.github/workflows/desktop.yml']
+    paths: ['desktop/**', '.github/workflows/desktop.yml']
 
 permissions:
   contents: write

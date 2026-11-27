@@ -120,20 +120,20 @@
   var upd = {stage: 'idle'};
   function banner() {
     var b = document.getElementById('dkUpd'), s = upd;
-    var show = s.stage === 'ready' || s.stage === 'manual' || s.stage === 'downloading';
+    var show = s.stage === 'ready' || s.stage === 'web-ready' || s.stage === 'manual' || s.stage === 'downloading';
     if (!show) { if (b) b.remove(); return; }
     if (!b) { b = document.createElement('div'); b.id = 'dkUpd'; b.setAttribute('role', 'status'); document.body.appendChild(b); }
     var v = s.version ? ' <b class="num">' + esc(s.version) + '</b>' : '';
     if (s.stage === 'downloading') b.innerHTML = '<span>في تحديث جديد' + v + ' — جاري التنزيل <b class="num">' + (s.percent || 0) + '%</b></span><i style="width:' + (s.percent || 0) + '%"></i>';
-    else b.innerHTML = '<span>' + (s.stage === 'ready' ? 'التحديث جاهز' + v + ' — لازم تحدث حتى تاخذ آخر نسخة' : 'في نسخة جديدة' + v + ' — لازم تحدث') + '</span>'
-      + '<button type="button" id="dkUpdGo">' + (s.stage === 'ready' ? 'حدّث هسه' : 'نزّل التحديث') + '</button><button type="button" id="dkUpdX" aria-label="بعدين">بعدين</button>';
+    else b.innerHTML = '<span>' + (s.stage === 'web-ready' ? 'التحديث جاهز' + v + ' — لازم تحدث (ياخذ ثانية)' : s.stage === 'ready' ? 'تحديث البرنامج جاهز' + v + ' — لازم تحدث' : 'في نسخة جديدة' + v + ' — لازم تحدث') + '</span>'
+      + '<button type="button" id="dkUpdGo">' + (s.stage === 'manual' ? 'نزّل التحديث' : 'حدّث هسه') + '</button><button type="button" id="dkUpdX" aria-label="بعدين">بعدين</button>';
     var go = document.getElementById('dkUpdGo'), x = document.getElementById('dkUpdX');
-    if (go) go.onclick = function () { go.disabled = true; go.textContent = s.stage === 'ready' ? 'جاري التحديث...' : 'انفتح التنزيل'; window.dukkanDesktop.install(); };
+    if (go) go.onclick = function () { go.disabled = true; go.textContent = s.stage === 'manual' ? 'انفتح التنزيل' : 'جاري التحديث...'; window.dukkanDesktop.install(); };
     if (x) x.onclick = function () { b.remove(); upd = {stage: 'later'}; };
   }
   if (window.dukkanDesktop) {
     document.addEventListener('DOMContentLoaded', function () {
-      window.dukkanDesktop.onUpdate(function (s) { if (upd.stage === 'later' && s.stage !== 'ready') return; upd = s || {stage: 'idle'}; banner(); var c = document.getElementById('dkChk'); if (c) c.textContent = upd.stage === 'checking' ? 'جاري الفحص...' : upd.stage === 'latest' ? 'عندك آخر نسخة ✓' : 'تحقق من التحديث'; });
+      window.dukkanDesktop.onUpdate(function (s) { if (upd.stage === 'later' && s.stage !== 'ready' && s.stage !== 'web-ready') return; upd = s || {stage: 'idle'}; banner(); var c = document.getElementById('dkChk'); if (c) c.textContent = upd.stage === 'checking' ? 'جاري الفحص...' : upd.stage === 'latest' ? 'عندك آخر نسخة ✓' : 'تحقق من التحديث'; });
     });
   }
 

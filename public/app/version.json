@@ -1,5 +1,52 @@
 {
-  "version": "2026.11.27-2030",
+  "version": "2026.11.27-2042",
   "exe": "https://github.com/alaakhan003-byte/dukkan/releases/latest/download/Dukkan-Setup.exe",
-  "repo": "alaakhan003-byte/dukkan"
+  "repo": "alaakhan003-byte/dukkan",
+  "files": [
+    {
+      "path": "icons/apple-touch-icon.png",
+      "size": 31704,
+      "sha256": "b043ae3285466ac2cd77c568cb75ffcdf3133d8ccbe591678618daa639c0eed9"
+    },
+    {
+      "path": "icons/favicon-32.png",
+      "size": 2083,
+      "sha256": "6f69dd02951c85844092ff9ea33001aa08b25be677b94af4457697060f3f5a35"
+    },
+    {
+      "path": "icons/icon-192.png",
+      "size": 35192,
+      "sha256": "79a51af732e6dcb3520ef9def02bc19754948fe5cc07a57210921672f1e5c686"
+    },
+    {
+      "path": "icons/icon-512.png",
+      "size": 210220,
+      "sha256": "0f9e9b2adb3db670cfe30f0c3f9a49f40534ba6338848bb784e83200b6d029e8"
+    },
+    {
+      "path": "icons/maskable-512.png",
+      "size": 278577,
+      "sha256": "a3640acde57c871b44c630fcbf9aa1e6d901f669a2137f734b8b4a6c807dd927"
+    },
+    {
+      "path": "index.html",
+      "size": 757148,
+      "sha256": "6b6a9b4c9240666be9e6e84a81d99dd0693392a07f04a4ad8411ac5a3c9c0d15"
+    },
+    {
+      "path": "manifest.webmanifest",
+      "size": 696,
+      "sha256": "342ad6b7e22470a25b384526ef8c82ee5045c799e25fc45333cebf9e0395af11"
+    },
+    {
+      "path": "site.js",
+      "size": 12912,
+      "sha256": "b18dcc2d12e76caeea009bd2dee7218b4465750e0ecc08ca6c9dba479b84f1f7"
+    },
+    {
+      "path": "vendor/zxing.min.js",
+      "size": 336008,
+      "sha256": "d7cc8f69dd70bdcf3ac00c9ae572bf2acb9f4132ba379c72df842e4db918652d"
+    }
+  ]
 }
