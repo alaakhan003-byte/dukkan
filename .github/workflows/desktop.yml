@@ -45,13 +45,16 @@ jobs:
         working-directory: desktop
         run: npm install --no-audit --no-fund
 
-      - name: Build EXE and publish it to Releases
+      - name: Build EXE
         working-directory: desktop
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win nsis --x64 --publish always
+        run: npx electron-builder --win nsis --x64 --publish never
 
-      - name: Make the release public (one release, all files together)
+      - name: Publish one release with all its files
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit v1.0.${{ github.run_number }} --repo ${{ github.repository }} --draft=false --latest
+        run: >-
+          gh release create v1.0.${{ github.run_number }}
+          desktop/dist/Dukkan-Setup.exe desktop/dist/Dukkan-Setup.exe.blockmap desktop/dist/latest.yml
+          --repo ${{ github.repository }} --latest
+          --title "دكّان للحاسبة 1.0.${{ github.run_number }}"
+          --notes "نسخة ويندوز من دكّان. التطبيق كله داخل البرنامج ويشتغل بدون إنترنت، والتحديثات توصل لحالها."
