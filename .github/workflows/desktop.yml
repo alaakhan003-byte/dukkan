@@ -36,6 +36,11 @@ jobs:
         working-directory: desktop
         run: npm version 1.0.${{ github.run_number }} --no-git-tag-version
 
+      - name: Release tag
+        run: |
+          git tag v1.0.${{ github.run_number }}
+          git push origin v1.0.${{ github.run_number }}
+
       - name: Install
         working-directory: desktop
         run: npm install --no-audit --no-fund
